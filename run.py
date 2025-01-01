@@ -8,7 +8,8 @@ session_string = "BQF0lboAcW3xr4pSLlwcg35NnGhsrXIFNoMVEyftP9M5m5mrN_WhmhhqVNWS2M
 api_id = 24417722  # Replace with your API ID
 api_hash = "68c75f726da6bd11acda8d7cd03e89f3"  # Replace with your API Hash
 
-app = Client(session_string, api_id=api_id, api_hash=api_hash, storage=MemoryStorage())
+# Provide a name for the MemoryStorage
+app = Client(session_string, api_id=api_id, api_hash=api_hash, storage=MemoryStorage(name="my_session"))
 
 with app:
     me = app.get_me()
