@@ -7,7 +7,9 @@ from pyrogram.errors import (
     UserNotParticipant,
     ChannelPrivate,
     ChatWriteForbidden,
-    MessageNotModified
+    MessageNotModified,
+    UserChannelsTooMuch,
+    InputUserDeactivated
 )
 import asyncio
 import logging
@@ -31,6 +33,8 @@ SESSION_STRING = "AgGbmwsABk8FEjWZErZQEbgSRtH-blZgasvUgGdkSqM2OmT_P_GyIzicaEHMcc
 
 BATCH_SIZE = 100
 SLEEP_DURATION = 20
+MAX_RETRIES = 3
+ERROR_THRESHOLD = 20  # Increased threshold for errors
 
 class BotError(Exception):
     """Base exception class for bot-related errors"""
@@ -77,6 +81,8 @@ async def process_join_requests(chat_id, limit=None):
     skipped_count = 0
     batch_count = 0
     errors_count = 0
+    too_many_channels_count = 0
+    deactivated_count = 0
     
     try:
         async for request in user.get_chat_join_requests(chat_id):
@@ -84,26 +90,49 @@ async def process_join_requests(chat_id, limit=None):
                 break
                 
             try:
-                await user.approve_chat_join_request(chat_id, request.user.id)
-                approved_count += 1
-                batch_count += 1
-                logger.info(f"Approved user {request.user.id} ({approved_count} total)")
+                # Skip deactivated users
+                if not request.user:
+                    deactivated_count += 1
+                    continue
+
+                retry_count = 0
+                while retry_count < MAX_RETRIES:
+                    try:
+                        await user.approve_chat_join_request(chat_id, request.user.id)
+                        approved_count += 1
+                        batch_count += 1
+                        logger.info(f"Approved user {request.user.id} ({approved_count} total)")
+                        break
+                    except FloodWait as e:
+                        logger.warning(f"FloodWait detected: waiting for {e.value} seconds")
+                        await asyncio.sleep(e.value)
+                        retry_count += 1
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count >= MAX_RETRIES:
+                            raise e
+                        await asyncio.sleep(1)
                 
             except UserAlreadyParticipant:
                 skipped_count += 1
                 logger.info(f"Skipped user {request.user.id} - Already a participant")
                 continue
                 
-            except FloodWait as e:
-                logger.warning(f"FloodWait detected: waiting for {e.value} seconds")
-                await asyncio.sleep(e.value)
+            except UserChannelsTooMuch:
+                too_many_channels_count += 1
+                logger.warning(f"User {request.user.id} is in too many channels")
+                continue
+                
+            except InputUserDeactivated:
+                deactivated_count += 1
+                logger.warning(f"User {request.user.id} is deactivated")
                 continue
                 
             except Exception as e:
                 errors_count += 1
                 logger.error(f"Error approving user {request.user.id}: {e}")
-                if errors_count >= 10:  # Stop if too many errors occur
-                    raise BotError("Too many errors occurred while processing requests")
+                if errors_count >= ERROR_THRESHOLD:
+                    raise BotError(f"Too many errors occurred while processing requests ({errors_count} errors)")
                 continue
                 
             if batch_count >= BATCH_SIZE:
@@ -121,7 +150,13 @@ async def process_join_requests(chat_id, limit=None):
         logger.error(f"Error processing join requests: {e}")
         raise BotError(f"Failed to process join requests: {str(e)}")
     
-    return approved_count, skipped_count, errors_count
+    return {
+        "approved": approved_count,
+        "skipped": skipped_count,
+        "errors": errors_count,
+        "too_many_channels": too_many_channels_count,
+        "deactivated": deactivated_count
+    }
 
 @bot.on_message(filters.command('approve') & filters.private)
 async def approve_requests(client, message):
@@ -167,15 +202,17 @@ async def approve_requests(client, message):
         processing_message = await message.reply("Processing join requests, please wait...")
         
         try:
-            approved_count, skipped_count, errors_count = await process_join_requests(chat_id, limit)
+            results = await process_join_requests(chat_id, limit)
             await processing_message.delete()
             
-            if approved_count > 0 or skipped_count > 0:
+            if sum(results.values()) > 0:
                 status_message = (
                     f"Process completed in {chat.title}:\n"
-                    f"• Approved: {approved_count} user{'s' if approved_count != 1 else ''}\n"
-                    f"• Skipped (already members): {skipped_count}\n"
-                    f"• Errors encountered: {errors_count}\n"
+                    f"• Approved: {results['approved']} user{'s' if results['approved'] != 1 else ''}\n"
+                    f"• Skipped (already members): {results['skipped']}\n"
+                    f"• Users in too many channels: {results['too_many_channels']}\n"
+                    f"• Deactivated users: {results['deactivated']}\n"
+                    f"• Other errors: {results['errors']}\n"
                     f"Processed in batches of {BATCH_SIZE} with {SLEEP_DURATION} second delays."
                 )
                 await message.reply(status_message)
@@ -200,8 +237,12 @@ async def approve_requests(client, message):
         await message.reply("An unexpected error occurred. Please try again later.")
 
 @bot.on_chat_join_request()
-async def handle_join_request(_, request):
+async def handle_join_request(_, request: ChatJoinRequest):
     try:
+        if not hasattr(request, 'user') or not request.user:
+            logger.error("Join request has no valid user attribute")
+            return
+            
         await request.approve()
         logger.info(f"Approved join request for user {request.user.id}")
     except UserAlreadyParticipant:
