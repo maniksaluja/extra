@@ -1,0 +1,76 @@
+from telegram import Bot
+from telegram.ext import Updater, CommandHandler
+import logging
+
+# Bot Token (replace with your actual bot token)
+TOKEN = '6261301387:AAEW05ugpIRp3jNBANf3hfeUzK2Xtb2drfo'
+
+# Enable logging to get info about bot's activity
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Function to fetch chat ID (for identifying the channel)
+def get_chat_id(update, context):
+    chat_id = update.message.chat_id
+    update.message.reply_text(f'The chat ID of this channel is: {chat_id}')
+
+# Function to get media size from the channel
+def get_media_size(update, context):
+    # Replace with your channel's numeric ID
+    channel_id = YOUR_CHANNEL_ID  # Example: -1002201427588
+
+    # Initialize bot with token
+    bot = Bot(token=TOKEN)
+    
+    # Get the latest 100 messages (or any desired limit)
+    try:
+        updates = bot.get_chat(channel_id).get_messages(limit=100)
+    except Exception as e:
+        update.message.reply_text(f'Error: {str(e)}')
+        return
+
+    total_size = 0
+
+    # Loop through the updates and check if they contain media
+    for message in updates:
+        if message.document:
+            total_size += message.document.file_size
+        elif message.video:
+            total_size += message.video.file_size
+        elif message.photo:
+            total_size += sum(photo.file_size for photo in message.photo)
+        elif message.audio:
+            total_size += message.audio.file_size
+
+    # Convert the size from bytes to GB
+    total_size_gb = total_size / (1024**3)  # 1 GB = 1024^3 bytes
+    update.message.reply_text(f'Total media size in the channel: {total_size_gb:.2f} GB')
+
+# Command to start the bot and provide instructions
+def start(update, context):
+    update.message.reply_text('Hello! I can help you calculate the total media size of your channel. Use /getsize to get the data.')
+
+# Function to handle errors
+def error(update, context):
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
+
+# Main function to run the bot
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    # Command handlers
+    dp.add_handler(CommandHandler('start', start))
+    dp.add_handler(CommandHandler('getid', get_chat_id))
+    dp.add_handler(CommandHandler('getsize', get_media_size))
+
+    # Log all errors
+    dp.add_error_handler(error)
+
+    # Start the bot
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
