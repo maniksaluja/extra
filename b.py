@@ -1,5 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler
+from telegram.ext import Application, CommandHandler
 
 # Replace this with your bot's token
 TOKEN = '8122078973:AAHFIdC-3qQg8f_ZxNpDgHJNasxTiOrtysk'
@@ -14,7 +14,7 @@ BUTTON_2_URL = "https://example2.com"
 BUTTON_3_URL = "https://example3.com"
 
 # Start command handler
-def start(update, context):
+async def start(update, context):
     # Define inline keyboard with buttons using the variables
     keyboard = [
         [
@@ -28,22 +28,19 @@ def start(update, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Send a welcome message with the buttons
-    update.message.reply_text('Welcome! Click a button:', reply_markup=reply_markup)
+    await update.message.reply_text('Welcome! Click a button:', reply_markup=reply_markup)
 
 # Set up the bot and the updater
 def main():
-    # Set up the Updater and pass it your bot's token
-    updater = Updater(TOKEN, use_context=True)
-    
-    # Get the dispatcher to register handlers
-    dispatcher = updater.dispatcher
+    # Set up the Application and pass it your bot's token
+    application = Application.builder().token(TOKEN).build()
     
     # Register the start command handler
-    dispatcher.add_handler(CommandHandler('start', start))
+    start_handler = CommandHandler('start', start)
+    application.add_handler(start_handler)
     
     # Start the bot
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
