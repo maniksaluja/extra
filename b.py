@@ -5,9 +5,9 @@ from telegram.ext import Application, CommandHandler
 TOKEN = '8122078973:AAHFIdC-3qQg8f_ZxNpDgHJNasxTiOrtysk'
 
 # Define button names and URLs as variables
-BUTTON_1_NAME = "Disable"
-BUTTON_2_NAME = "≼1Day≽"
-BUTTON_3_NAME = "30Days"
+BUTTON_1_NAME = "𝘋𝘪𝘴𝘢𝘣𝘭𝘦"
+BUTTON_2_NAME = "1𝘋𝘢𝘺𝘴"
+BUTTON_3_NAME = "30𝘋𝘢𝘺𝘴"
 
 BUTTON_1_URL = "https://example.com"
 BUTTON_2_URL = "https://example2.com"
