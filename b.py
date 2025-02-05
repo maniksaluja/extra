@@ -2,7 +2,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler
 
 # Replace this with your bot's token
-TOKEN = '8122078973:AAHFIdC-3qQg8f_ZxNpDgHJNasxTiOrtysk'
+TOKEN = '8108094028:AAHE8BfBW1KvOLb-zQmBe_pj2c_KgZrRWvo'
 
 # Define button names and URLs as variables
 BUTTON_1_NAME = "𝘋𝘪𝘴𝘢𝘣𝘭𝘦"
