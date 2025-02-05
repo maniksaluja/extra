@@ -9,8 +9,8 @@ BUTTON_1_NAME = "𝘋𝘪𝘴𝘢𝘣𝘭𝘦"
 BUTTON_2_NAME = "≼•1𝘋𝘢𝘺𝘴•≽"
 BUTTON_3_NAME = "30𝘋𝘢𝘺𝘴"
 
-BUTTON_1_URL = "upi://pay?pa=paytmqr2810050501011cgu66ncd772@paytm&pn=PAYTM_MERCHANT&tid=ORDER5ac1eca5c8&tn=ORDER5ac1eca5c8&am=1&cu=INR&tr=ORDER5ac1eca5c8"
-BUTTON_2_URL = "upi://pay?pa=paytmqr2810050501011cgu66ncd772@paytm&pn=PAYTM_MERCHANT&tid=ORDER5ac1eca5c8&tn=ORDER5ac1eca5c8&am=1&cu=INR&tr=ORDER5ac1eca5c8"
+BUTTON_1_URL = "https://pay.google.com/gp/p/ui/pay?pa=paytmqr2810050501011cgu66ncd772@paytm&pn=PAYTM_MERCHANT&mc=0000&tid=ORDER5ac1eca5c8&tr=ORDER5ac1eca5c8&tn=ORDER5ac1eca5c8&am=1&cu=INR"
+BUTTON_2_URL = "https://example3.com"
 BUTTON_3_URL = "https://example3.com"
 
 # Start command handler
