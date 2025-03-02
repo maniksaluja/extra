@@ -7,33 +7,33 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-API_ID = int(getenv("API_ID", ""))
-API_ID2 = int(getenv("API_ID2", ""))
-API_HASH = getenv("API_HASH", "")
-API_HASH2 = getenv("API_HASH2", "")
-BOT_TOKEN = getenv("BOT_TOKEN", "")
-BOT_TOKEN2 = getenv("BOT_TOKEN2","")
+API_ID = int(getenv("API_ID", "28070245"))
+API_ID2 = int(getenv("API_ID2", "20886865"))
+API_HASH = getenv("API_HASH", "c436fc81a842d159c75e1e212b7f6e7c")
+API_HASH2 = getenv("API_HASH2", "754d23c04f9244762390c095d5d8fe2b")
+BOT_TOKEN = getenv("BOT_TOKEN", "8122078973:AAHD8OJBXghpuWI3N48-CJubM3PInyMe1C0")
+BOT_TOKEN2 = getenv("BOT_TOKEN2","7348838977:AAEh-lq3jud1VTe79zm6EScmJG63Rio2L3g")
 STRING1=getenv("STRING_SESSION", "")
-STRING2 =getenv("STRING_SESSION2" , None)
+STRING2 =getenv("STRING_SESSION2" , "BQE-tVEALzZ5ur4DNaQ9H0DcamIviYM1fcI0zqDpCUGKFv7gxA90AMcojJBRfrnz3ku9qMu_hJaUFG514_Ad_eGPx4ep836xhWgFYLABI2UrHXsYxMVYur_0lSy2mi2ixLY_V5Rq5iZyjFfwFjiurtpqPgQoH5KIvGa6ZnmoD_OCAGlGwJsTa8hg7TG0efkeNMJlNGyBsfADe-jQeeI7FBkAuz5Ic5ZA__7Ky_Q7IwsPK4IlwLymDWonEqhuz1EvV3A4LFwa5_bOMTarhzWqQbtuTixxh7nP6Ym-Tx7FXhxNS1JslpVWkAjQvPEyNAmpkyTyoGad7WR0-OV6NlMVslSYv2rnPgAAAAGfEYMRAA")
 
 OWNER_ID = list(
     map(int, getenv("OWNER_ID", "1234567890").split())
 )
 
 # This is important to keep communication between the bots
-BCAST_CHANNEL = int(getenv("BCAST_CHANNEL"), 0) 
+BCAST_CHANNEL = int(getenv("BCAST_CHANNEL"), -1002358061049) 
 
 #Your db channel Id
 DATABASE_1 = int(getenv("DATABASE_CHANNEL_1",0)) 
 DATABASE_2 = int(getenv("DATABASE_CHANNEL_2",0))
 BACKUP_DATABASE_1 = int(getenv("BACKUP_DATABASE_1",0))
 BACKUP_DATABASE_2 = int(getenv("BACKUP_DATABASE_2",0))
-POSTING_CHANNEL_1= int(getenv("POSTING_CHANNEL_1",0))
-POSTING_CHANNEL_2 = int(getenv("POSTING_CHANNEL_2",0))
-LOGS_CHANNEL_1 = int(getenv("LOGS_CHANNEL_1",0))
-LOGS_CHANNEL_2 = int(getenv("LOGS_CHANNEL_2",0))
-USELESS_CHANNEL = int(getenv("USELESS_CHANNEL", 0))
-FEEDBACK_CHANNEL = int(getenv("FEEDBACK_CHANNEL",0))
+POSTING_CHANNEL_1= int(getenv("POSTING_CHANNEL_1",-1002470977842))
+POSTING_CHANNEL_2 = int(getenv("POSTING_CHANNEL_2",-1002469220386))
+LOGS_CHANNEL_1 = int(getenv("LOGS_CHANNEL_1",-1002469220386))
+LOGS_CHANNEL_2 = int(getenv("LOGS_CHANNEL_2",-1002469220386))
+USELESS_CHANNEL = int(getenv("USELESS_CHANNEL", -1002358061049))
+FEEDBACK_CHANNEL = int(getenv("FEEDBACK_CHANNEL",-1002277059467))
 
 #mongo database URI
 DB_URI = getenv("DATABASE_URL", "")
@@ -67,7 +67,7 @@ PAYTM_API_KEY = getenv("PAYTM_API_KEY","")
 THUMBNAIL_PIC_1 = getenv("THUMBNAIL_PIC_1", "https://graph.org/file/e677ea79ecbdae5b8dbaa.jpg")
 THUMBNAIL_PIC_2 = getenv("THUMBNAIL_PIC_2", "https://graph.org/file/5f3d0d2c8e35a037e4663.jpg")
 
-DAILY_FREE_CONTENT = getenv("DAILY_FREE_CONTENT",2)
+DAILY_FREE_CONTENT = getenv("DAILY_FREE_CONTENT",5)
 
 # ================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================================
 ### DONT TOUCH or EDIT codes after this line
@@ -101,7 +101,7 @@ BOT_ALL_CHANNELS.append(FEEDBACK_CHANNEL)
 TOKEN_SECRET_EXPIRY_TIME =86400
 
 emoji = {
-    "emoji_1":"👍",
+    "emoji_1":"👍🏻",
     "emoji_2":"❤️",
     "emoji_3":"😂",
     "emoji_4":"🤤",
