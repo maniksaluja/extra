@@ -270,7 +270,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Single media link generation
         unique_id = str(uuid.uuid4())
         save_message(unique_id, data)
-        bot_username = "@YourBot"  # Replace with your bot's username
+        bot_username = "Tes82u372bot"  # Replace with your bot's username
         link = f"https://t.me/{bot_username}?start={unique_id}"
         await message.reply_text(f"Here is your unique link:\n{link}")
 
