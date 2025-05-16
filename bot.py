@@ -224,6 +224,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_id=user_progress[user_id]["progress_message_id"],
             text=get_progress_message(total, sent, skipped)
         )
+        async with processing_lock:
+            if user_id in user_progress:
+                if user_progress[user_id]["progress_message_id"]:
+                    try:
+                        await context.bot.unpin_chat_message(
+                            chat_id=message.chat_id,
+                            message_id=user_progress[user_id]["progress_message_id"]
+                        )
+                    except TelegramError as e:
+                        logger.error(f"Unpin message error: {e}")
+                del user_progress[user_id]
     else:
         content_type = data.get("type")
         content = data.get("content")
@@ -241,18 +252,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_document(document=content, caption=caption, protect_content=restrict)
         except TelegramError as e:
             logger.error(f"Send content error: {e}")
-            async with processing_lock:
-        if user_id in user_progress:
-            if user_progress[user_id]["progress_message_id"]:
-                try:
-                    await context.bot.unpin_chat_message(
-                        chat_id=message.chat_id,
-                        message_id=user_progress[user_id]["progress_message_id"]
-                    )
-                except TelegramError as e:
-                    logger.error(f"Unpin message error: {e}")
-            del user_progress[user_id]
-
+        async with processing_lock:
+            if user_id in user_progress:
+                if user_progress[user_id]["progress_message_id"]:
+                    try:
+                        await context.bot.unpin_chat_message(
+                            chat_id=message.chat_id,
+                            message_id=user_progress[user_id]["progress_message_id"]
+                        )
+                    except TelegramError as e:
+                        logger.error(f"Unpin message error: {e}")
+                del user_progress[user_id]
 async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
     if not user_id or not is_sudo_user(user_id):
@@ -541,7 +551,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         edit_data[user_id]["items"].append(data)
     else:
         unique_id = str(uuid.uuid4())
-        save_message(unique_id, {"_id": unique_id, "type": data["type"], "content": data["content"], "caption": caption})
+        save_message(unique_id, {"_id": unique_id, "type":RELEASED data["type"], "content": data["content"], "caption": caption})
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Link: {link}")
 
