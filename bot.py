@@ -1,14 +1,17 @@
 import json
 import uuid
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+# Configuration Section
+BOT_USERNAME = "@YourBot"  # Replace with your bot's username
+SUDO_USERS = [123456789, 987654321]  # Replace with your sudo user IDs
+BOT_TOKEN = "7739730998:AAEB8i_2hItBOj9gNYs9bDgAsrDWACAUE7k"  # Replace with your bot token
 
 # File to store messages, media, and approvals
 MESSAGE_FILE = "messages.json"
 APPROVAL_FILE = "approvals.json"
-
-# Sudo users (replace with actual Telegram user IDs)
-SUDO_USERS = [7901884010]  # Add your sudo user IDs here
 
 # Temporary storage for batch and edit
 batch_data = {}
@@ -86,7 +89,7 @@ def check_approval(user_id, unique_id):
 def is_sudo_user(user_id):
     return user_id in SUDO_USERS
 
-# /start command handler
+# /start command handler with rate limiting
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     args = context.args
@@ -108,7 +111,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 content_type = item.get("type")
                 content = item.get("content")
                 caption = item.get("caption", "")
-                if content_type == "photo":
+                try:
+                    if content_type == "photo":
+                        await update.message.reply_photo(photo=content, caption=caption)
+                    elif content_type == "video":
+                        await update.message.reply_video(video=content, caption=caption)
+                    elif content_type == "audio":
+                        await update.message.reply_audio(audio=content, caption=caption)
+                    elif content_type == "document":
+                        await update.message.reply_document(document=content, caption=caption)
+                    # Add delay to prevent flood wait
+                    await asyncio.sleep(0.1)  # 100ms delay between messages
+                except Exception as e:
+                    print(f"Error sending media: {e}")
+                    await update.message.reply_text("Error sending some media.")
+        else:
+            content_type = data.get("type")
+            content = data.get("content")
+            caption = data.get("caption", "")
+            try:
+                if content_type == "text":
+                    await update.message.reply_text(content)
+                elif content_type == "photo":
                     await update.message.reply_photo(photo=content, caption=caption)
                 elif content_type == "video":
                     await update.message.reply_video(video=content, caption=caption)
@@ -116,22 +140,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_audio(audio=content, caption=caption)
                 elif content_type == "document":
                     await update.message.reply_document(document=content, caption=caption)
-        else:
-            content_type = data.get("type")
-            content = data.get("content")
-            caption = data.get("caption", "")
-            if content_type == "text":
-                await update.message.reply_text(content)
-            elif content_type == "photo":
-                await update.message.reply_photo(photo=content, caption=caption)
-            elif content_type == "video":
-                await update.message.reply_video(video=content, caption=caption)
-            elif content_type == "audio":
-                await update.message.reply_audio(audio=content, caption=caption)
-            elif content_type == "document":
-                await update.message.reply_document(document=content, caption=caption)
-            else:
-                await update.message.reply_text("Unsupported content type!")
+                else:
+                    await update.message.reply_text("Unsupported content type!")
+            except Exception as e:
+                print(f"Error sending content: {e}")
+                await update.message.reply_text("Error sending content.")
     else:
         await update.message.reply_text(
             "Welcome! Only approved links can be accessed. Contact a sudo user for approval."
@@ -152,8 +165,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = {"type": "text", "content": message}
     save_message(unique_id, data)
 
-    bot_username = "Tes82u372bot"  # Replace with your bot's username
-    link = f"https://t.me/{bot_username}?start={unique_id}"
+    link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
     await update.message.reply_text(f"Here is your unique link:\n{link}")
 
 # /batch command handler
@@ -176,20 +188,22 @@ async def makeit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_sudo_user(user_id):
         return  # Ignore non-sudo users
 
-    if user_id not in batch_data or not batch_data[user_id]["items"]:
-        await update.message.reply_text("No batch started or no media uploaded. Use /batch first.")
-        return
-
-    unique_id = str(uuid.uuid4())
-    data = {"type": "batch", "content": batch_data[user_id]["items"]}
-    save_message(unique_id, data)
-
-    bot_username = "@YourBot"  # Replace with your bot's username
-    link = f"https://t.me/{bot_username}?start={unique_id}"
-    await update.message.reply_text(f"Batch link generated:\n{link}")
-
-    # Clear batch data
-    del batch_data[user_id]
+    if user_id in batch_data and batch_data[user_id]["items"]:
+        unique_id = str(uuid.uuid4())
+        data = {"type": "batch", "content": batch_data[user_id]["items"]}
+        save_message(unique_id, data)
+        link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
+        await update.message.reply_text(f"Batch link generated:\n{link}")
+        del batch_data[user_id]
+    elif user_id in edit_data and edit_data[user_id]["items"]:
+        unique_id = edit_data[user_id]["unique_id"]
+        data = {"type": "batch", "content": edit_data[user_id]["items"]}
+        save_message(unique_id, data)
+        link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
+        await update.message.reply_text(f"Link updated:\n{link}")
+        del edit_data[user_id]
+    else:
+        await update.message.reply_text("No batch or edit started, or no media uploaded. Use /batch or /edit first.")
 
 # /edit command handler
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -256,22 +270,18 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = message.document.file_id
         data = {"type": "document", "content": file_id, "caption": caption}
     else:
-        await message.reply_text("Unsupported media type!")
-        return
+        return  # Ignore unsupported media types
 
-    # Check if user is in batch or edit mode
+    # Add to batch or edit data
     if user_id in batch_data:
         batch_data[user_id]["items"].append(data)
-        await message.reply_text(f"Media added to batch '{batch_data[user_id]['name']}'. Use /makeit to generate the link.")
     elif user_id in edit_data:
         edit_data[user_id]["items"].append(data)
-        await message.reply_text(f"Media added to edit queue. Use /makeit to update the link.")
     else:
         # Single media link generation
         unique_id = str(uuid.uuid4())
         save_message(unique_id, data)
-        bot_username = "Tes82u372bot"  # Replace with your bot's username
-        link = f"https://t.me/{bot_username}?start={unique_id}"
+        link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Here is your unique link:\n{link}")
 
 # Handler for non-sudo user messages
@@ -287,13 +297,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("An error occurred. Please try again.")
 
 def main():
-    # Replace with your bot token from BotFather
-    BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"
-
     # Initialize storage
     init_storage()
 
-    # Create the Application
+    # Create the Application with rate limiting
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Add handlers
