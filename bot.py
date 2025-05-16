@@ -5,9 +5,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Configuration Section
-BOT_USERNAME = "@YourBot"  # Replace with your bot's username
-SUDO_USERS = [123456789, 987654321]  # Replace with your sudo user IDs
-BOT_TOKEN = "7739730998:AAEB8i_2hItBOj9gNYs9bDgAsrDWACAUE7k"  # Replace with your bot token
+BOT_USERNAME = "Tes82u372bot"  # Replace with your bot's username
+SUDO_USERS = [7901884010]  # Replace with your sudo user IDs
+BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"  # Replace with your bot token
 
 # File to store messages, media, and approvals
 MESSAGE_FILE = "messages.json"
