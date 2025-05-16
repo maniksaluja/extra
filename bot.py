@@ -1,23 +1,35 @@
 import json
 import uuid
 import asyncio
+import redis
+import time
+from datetime import datetime, timedelta
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.error import TelegramError
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
 # Configuration Section
-BOT_USERNAME = "Tes82u372bot"  # Replace with your bot's username
-SUDO_USERS = [7901884010]  # Replace with your sudo user IDs
-BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"  # Replace with your bot token
-MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Replace with your MongoDB URI
+BOT_USERNAME = "Tes82u372bot"
+SUDO_USERS = [7901884010]
+BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"
+MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+REDIS_HOST = "localhost"  # Change to your Redis host
+REDIS_PORT = 6379
+REDIS_DB = 0
 DB_NAME = "telegram_bot"
 MESSAGES_COLLECTION = "messages"
 APPROVALS_COLLECTION = "approvals"
+BATCH_SIZE = 20000  # Number of media items to send per batch
+PROGRESS_UPDATE_INTERVAL = 30  # Seconds between progress message updates
 
-# Temporary storage for batch and edit
+# Temporary storage
 batch_data = {}
 edit_data = {}
+user_progress = {}  # Tracks progress for each user
+processing_lock = asyncio.Lock()  # Lock for concurrent processing
 
 # MongoDB client setup
 try:
@@ -29,6 +41,14 @@ except ConnectionFailure as e:
     print(f"Error connecting to MongoDB: {e}")
     exit(1)
 
+# Redis client setup
+try:
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    redis_client.ping()
+except redis.ConnectionError as e:
+    print(f"Error connecting to Redis: {e}")
+    exit(1)
+
 # Save message or media with unique ID
 def save_message(unique_id, data):
     try:
@@ -37,13 +57,23 @@ def save_message(unique_id, data):
             {"$set": data},
             upsert=True
         )
+        # Cache in Redis with 1-hour TTL
+        redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
     except Exception as e:
         print(f"Error saving message: {e}")
 
 # Load message or media by unique ID
 def load_message(unique_id):
     try:
-        return messages_collection.find_one({"_id": unique_id})
+        # Check Redis cache first
+        cached = redis_client.get(f"message:{unique_id}")
+        if cached:
+            return json.loads(cached)
+        # Fallback to MongoDB
+        data = messages_collection.find_one({"_id": unique_id})
+        if data:
+            redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
+        return data
     except Exception as e:
         print(f"Error loading message: {e}")
         return None
@@ -93,26 +123,67 @@ def check_approval(user_id, unique_id):
 def is_sudo_user(user_id):
     return user_id in SUDO_USERS
 
-# /start command handler with rate limiting
+# Format time in IST, 12-hour format
+def format_time_ist(seconds):
+    ist = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(ist)
+    future = now + timedelta(seconds=seconds)
+    return future.strftime("%I:%M %p")
+
+# Calculate progress message
+def get_progress_message(total, sent):
+    percentage = (sent / total) * 100 if total > 0 else 0
+    remaining = total - sent
+    # Assume 0.1s per media for estimation
+    est_time = remaining * 0.1
+    time_str = format_time_ist(est_time)
+    return (
+        f"Total Media: {total}\n"
+        f"Uploaded: {sent} ({percentage:.1f}%)\n"
+        f"Approx time remaining: {est_time:.0f}s (until {time_str} IST)"
+    )
+
+# /start command handler with pagination and progress
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     args = context.args
-    if args:
-        unique_id = args[0]
-        # Check approval and restriction
-        approved, restrict = check_approval(user_id, unique_id)
-        if not approved:
-            await update.message.reply_text("You are not approved to access this link!")
-            return
+    if not args:
+        await update.message.reply_text(
+            "Welcome! Only approved links can be accessed. Contact a sudo user for approval."
+        )
+        return
 
-        data = load_message(unique_id)
-        if not data:
-            await update.message.reply_text("Message or media not found or expired!")
-            return
+    unique_id = args[0]
+    # Check approval and restriction
+    approved, restrict = check_approval(user_id, unique_id)
+    if not approved:
+        await update.message.reply_text("You are not approved to access this link!")
+        return
 
-        # Handle batch or single media
-        if data.get("type") == "batch":
-            for item in data.get("content", []):
+    data = load_message(unique_id)
+    if not data:
+        await update.message.reply_text("Message or media not found or expired!")
+        return
+
+    async with processing_lock:
+        # Initialize user progress
+        user_progress[user_id] = {"sent": 0, "message_id": None, "last_update": 0}
+
+    if data.get("type") == "batch":
+        content = data.get("content", [])
+        total = len(content)
+        sent = 0
+        base_delay = 0.1  # Initial delay
+        retry_count = 0
+        max_retries = 5
+
+        # Send initial progress message
+        progress_msg = await update.message.reply_text(get_progress_message(total, sent))
+        user_progress[user_id]["message_id"] = progress_msg.message_id
+
+        for i in range(0, total, BATCH_SIZE):
+            batch = content[i:i + BATCH_SIZE]
+            for item in batch:
                 content_type = item.get("type")
                 content = item.get("content")
                 caption = item.get("caption", "")
@@ -133,49 +204,84 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await update.message.reply_document(
                             document=content, caption=caption, protect_content=restrict
                         )
-                    # Add delay to prevent flood wait
-                    await asyncio.sleep(0.1)  # 100ms delay between messages
-                except Exception as e:
-                    print(f"Error sending media: {e}")
-                    await update.message.reply_text("Error sending some media.")
-        else:
-            content_type = data.get("type")
-            content = data.get("content")
-            caption = data.get("caption", "")
-            try:
-                if content_type == "text":
-                    await update.message.reply_text(content)
-                elif content_type == "photo":
-                    await update.message.reply_photo(
-                        photo=content, caption=caption, protect_content=restrict
+                    sent += 1
+                    user_progress[user_id]["sent"] = sent
+                    retry_count = 0  # Reset retry count on success
+                except TelegramError as e:
+                    if "429" in str(e):
+                        retry_count += 1
+                        if retry_count > max_retries:
+                            await update.message.reply_text("Too many retries, stopping.")
+                            return
+                        backoff = base_delay * (2 ** retry_count)
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        print(f"Error sending media: {e}")
+                        continue
+                await asyncio.sleep(base_delay)
+
+            # Update progress message if 30s elapsed
+            current_time = time.time()
+            if current_time - user_progress[user_id]["last_update"] >= PROGRESS_UPDATE_INTERVAL:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=update.message.chat_id,
+                        message_id=user_progress[user_id]["message_id"],
+                        text=get_progress_message(total, sent)
                     )
-                elif content_type == "video":
-                    await update.message.reply_video(
-                        video=content, caption=caption, protect_content=restrict
-                    )
-                elif content_type == "audio":
-                    await update.message.reply_audio(
-                        audio=content, caption=caption, protect_content=restrict
-                    )
-                elif content_type == "document":
-                    await update.message.reply_document(
-                        document=content, caption=caption, protect_content=restrict
-                    )
-                else:
-                    await update.message.reply_text("Unsupported content type!")
-            except Exception as e:
-                print(f"Error sending content: {e}")
-                await update.message.reply_text("Error sending content.")
+                    user_progress[user_id]["last_update"] = current_time
+                except TelegramError as e:
+                    print(f"Error updating progress message: {e}")
+
+        # Final progress update
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.message.chat_id,
+                message_id=user_progress[user_id]["message_id"],
+                text=f"Upload complete! Total Media: {total}"
+            )
+        except TelegramError as e:
+            print(f"Error finalizing progress message: {e}")
     else:
-        await update.message.reply_text(
-            "Welcome! Only approved links can be accessed. Contact a sudo user for approval."
-        )
+        content_type = data.get("type")
+        content = data.get("content")
+        caption = data.get("caption", "")
+        try:
+            if content_type == "text":
+                await update.message.reply_text(content)
+            elif content_type == "photo":
+                await update.message.reply_photo(
+                    photo=content, caption=caption, protect_content=restrict
+                )
+            elif content_type == "video":
+                await update.message.reply_video(
+                    video=content, caption=caption, protect_content=restrict
+                )
+            elif content_type == "audio":
+                await update.message.reply_audio(
+                    audio=content, caption=caption, protect_content=restrict
+                )
+            elif content_type == "document":
+                await update.message.reply_document(
+                    document=content, caption=caption, protect_content=restrict
+                )
+            else:
+                await update.message.reply_text("Unsupported content type!")
+        except TelegramError as e:
+            print(f"Error sending content: {e}")
+            await update.message.reply_text("Error sending content.")
+
+    # Clean up user progress
+    async with processing_lock:
+        if user_id in user_progress:
+            del user_progress[user_id]
 
 # /generate command handler for text
 async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
-        return  # Ignore non-sudo users
+        return
 
     if not context.args:
         await update.message.reply_text("Please provide a message: /generate <message>")
@@ -193,7 +299,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
-        return  # Ignore non-sudo users
+        return
 
     if not context.args:
         await update.message.reply_text("Please provide a batch name: /batch <name>")
@@ -207,7 +313,7 @@ async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
-        return  # Ignore non-sudo users
+        return
 
     if user_id in batch_data and batch_data[user_id]["items"]:
         unique_id = str(uuid.uuid4())
@@ -218,7 +324,6 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del batch_data[user_id]
     elif user_id in edit_data and edit_data[user_id]["items"]:
         unique_id = edit_data[user_id]["unique_id"]
-        # Load existing content and append new items
         existing_data = load_message(unique_id)
         if existing_data and existing_data.get("type") == "batch":
             existing_items = existing_data.get("content", [])
@@ -237,7 +342,7 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
-        return  # Ignore non-sudo users
+        return
 
     if not context.args:
         await update.message.reply_text("Please provide a bot link: /edit <botlink>")
@@ -257,7 +362,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
-        return  # Ignore non-sudo users
+        return
 
     if len(context.args) < 2:
         await update.message.reply_text("Please provide a user ID and bot link: /a <UserID> <botlink>")
@@ -274,7 +379,6 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_approval(target_user_id, unique_id)
         await update.message.reply_text(f"User {target_user_id} approved for link {bot_link}.")
 
-        # Send message to approved user with buttons
         keyboard = [
             [
                 InlineKeyboardButton("Yes", callback_data=f"allow_{unique_id}_{target_user_id}"),
@@ -289,7 +393,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except ValueError:
         await update.message.reply_text("Invalid user ID format!")
-    except Exception as e:
+    except TelegramError as e:
         print(f"Error sending approval message: {e}")
         await update.message.reply_text("Error notifying the user.")
 
@@ -312,7 +416,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
-        return  # Ignore non-sudo users
+        return
 
     message = update.message
     caption = message.caption or ""
@@ -331,15 +435,13 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = message.document.file_id
         data = {"type": "document", "content": file_id, "caption": caption}
     else:
-        return  # Ignore unsupported media types
+        return
 
-    # Add to batch or edit data
     if user_id in batch_data:
         batch_data[user_id]["items"].append(data)
     elif user_id in edit_data:
         edit_data[user_id]["items"].append(data)
     else:
-        # Single media link generation
         unique_id = str(uuid.uuid4())
         save_message(unique_id, {"_id": unique_id, "type": data["type"], "content": data["content"], "caption": caption})
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
@@ -349,7 +451,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_non_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
-        return  # Ignore all non-link-related messages from non-sudo users
+        return
 
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -358,10 +460,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("An error occurred. Please try again.")
 
 def main():
-    # Create the Application with rate limiting
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("generate", generate_text))
     application.add_handler(CommandHandler("batch", batch))
@@ -377,10 +477,8 @@ def main():
     )
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_non_sudo))
 
-    # Add error handler
     application.add_error_handler(error_handler)
 
-    # Start the bot
     print("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
