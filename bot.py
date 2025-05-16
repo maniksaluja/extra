@@ -237,12 +237,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_video(video=content, caption=caption, protect_content=restrict)
             elif content_type == "audio":
                 await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
-            elif content_type шесть
-
-await message.reply_document(document=content, caption=caption, protect_content=restrict)
+            elif content_type == "document":
+                await message.reply_document(document=content, caption=caption, protect_content=restrict)
         except TelegramError as e:
             logger.error(f"Send content error: {e}")
-    async with processing_lock:
+
+async with processing_lock:
         if user_id in user_progress:
             if user_progress[user_id]["progress_message_id"]:
                 try:
@@ -475,7 +475,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unique_id = data[1]
         user_id = query.from_user.id
         if not is_sudo_user(user_id):
-            await query.health_check.edit_text("Only sudo users can edit!")
+            await query.message.edit_text("Only sudo users can edit!")
             return
         existing_data = load_message(unique_id)
         if not existing_data:
