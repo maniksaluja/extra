@@ -1,53 +1,49 @@
 import json
 import uuid
 import asyncio
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from pymongo import MongoClient
+from pymongo.errors import ConnectionError
 
 # Configuration Section
-BOT_USERNAME = "Tes82u372bot"  # Replace with your bot's username
-SUDO_USERS = [7901884010]  # Replace with your sudo user IDs
-BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"  # Replace with your bot token
-
-# File to store messages, media, and approvals
-MESSAGE_FILE = "messages.json"
-APPROVAL_FILE = "approvals.json"
+BOT_USERNAME = "@YourBot"  # Replace with your bot's username
+SUDO_USERS = [123456789, 987654321]  # Replace with your sudo user IDs
+BOT_TOKEN = "7739730998:AAEB8i_2hItBOj9gNYs9bDgAsrDWACAUE7k"  # Replace with your bot token
+MONGO_URI = "mongodb://localhost:27017/"  # Replace with your MongoDB URI (e.g., MongoDB Atlas URI)
+DB_NAME = "telegram_bot"
+MESSAGES_COLLECTION = "messages"
+APPROVALS_COLLECTION = "approvals"
 
 # Temporary storage for batch and edit
 batch_data = {}
 edit_data = {}
 
-# Initialize JSON files if they don't exist
-def init_storage():
-    try:
-        with open(MESSAGE_FILE, "x") as f:
-            json.dump({}, f)
-    except FileExistsError:
-        pass
-    try:
-        with open(APPROVAL_FILE, "x") as f:
-            json.dump({}, f)
-    except FileExistsError:
-        pass
+# MongoDB client setup
+try:
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    messages_collection = db[MESSAGES_COLLECTION]
+    approvals_collection = db[APPROVALS_COLLECTION]
+except ConnectionError as e:
+    print(f"Error connecting to MongoDB: {e}")
+    exit(1)
 
 # Save message or media with unique ID
 def save_message(unique_id, data):
     try:
-        with open(MESSAGE_FILE, "r+") as f:
-            db = json.load(f)
-            db[unique_id] = data
-            f.seek(0)
-            f.truncate()
-            json.dump(db, f, indent=4)
+        messages_collection.update_one(
+            {"_id": unique_id},
+            {"$set": data},
+            upsert=True
+        )
     except Exception as e:
         print(f"Error saving message: {e}")
 
 # Load message or media by unique ID
 def load_message(unique_id):
     try:
-        with open(MESSAGE_FILE, "r") as f:
-            db = json.load(f)
-            return db.get(unique_id, None)
+        return messages_collection.find_one({"_id": unique_id})
     except Exception as e:
         print(f"Error loading message: {e}")
         return None
@@ -55,35 +51,43 @@ def load_message(unique_id):
 # Save approval for user and link
 def save_approval(user_id, unique_id):
     try:
-        with open(APPROVAL_FILE, "r+") as f:
-            db = json.load(f)
-            if unique_id not in db:
-                db[unique_id] = []
-            if user_id not in db[unique_id]:
-                db[unique_id].append(user_id)
-                f.seek(0)
-                f.truncate()
-                json.dump(db, f, indent=4)
+        approvals_collection.update_one(
+            {"_id": unique_id},
+            {"$addToSet": {"users": {"user_id": user_id, "restrict": None}}},
+            upsert=True
+        )
     except Exception as e:
         print(f"Error saving approval: {e}")
+
+# Update restriction setting
+def update_restriction(unique_id, user_id, restrict):
+    try:
+        approvals_collection.update_one(
+            {"_id": unique_id, "users.user_id": user_id},
+            {"$set": {"users.$.restrict": restrict}}
+        )
+    except Exception as e:
+        print(f"Error updating restriction: {e}")
 
 # Check and remove approval after use (one-time)
 def check_approval(user_id, unique_id):
     try:
-        with open(APPROVAL_FILE, "r+") as f:
-            db = json.load(f)
-            if unique_id in db and user_id in db[unique_id]:
-                db[unique_id].remove(user_id)
-                if not db[unique_id]:
-                    del db[unique_id]
-                f.seek(0)
-                f.truncate()
-                json.dump(db, f, indent=4)
-                return True
-            return False
+        result = approvals_collection.find_one({"_id": unique_id})
+        if result:
+            for user in result.get("users", []):
+                if user["user_id"] == user_id:
+                    restrict = user.get("restrict", False)
+                    approvals_collection.update_one(
+                        {"_id": unique_id},
+                        {"$pull": {"users": {"user_id": user_id}}}
+                    )
+                    if not approvals_collection.find_one({"_id": unique_id})["users"]:
+                        approvals_collection.delete_one({"_id": unique_id})
+                    return True, restrict
+        return False, False
     except Exception as e:
         print(f"Error checking approval: {e}")
-        return False
+        return False, False
 
 # Check if user is sudo
 def is_sudo_user(user_id):
@@ -95,8 +99,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args:
         unique_id = args[0]
-        # Check approval
-        if not check_approval(user_id, unique_id):
+        # Check approval and restriction
+        approved, restrict = check_approval(user_id, unique_id)
+        if not approved:
             await update.message.reply_text("You are not approved to access this link!")
             return
 
@@ -113,13 +118,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption = item.get("caption", "")
                 try:
                     if content_type == "photo":
-                        await update.message.reply_photo(photo=content, caption=caption)
+                        await update.message.reply_photo(
+                            photo=content, caption=caption, protect_content=restrict
+                        )
                     elif content_type == "video":
-                        await update.message.reply_video(video=content, caption=caption)
+                        await update.message.reply_video(
+                            video=content, caption=caption, protect_content=restrict
+                        )
                     elif content_type == "audio":
-                        await update.message.reply_audio(audio=content, caption=caption)
+                        await update.message.reply_audio(
+                            audio=content, caption=caption, protect_content=restrict
+                        )
                     elif content_type == "document":
-                        await update.message.reply_document(document=content, caption=caption)
+                        await update.message.reply_document(
+                            document=content, caption=caption, protect_content=restrict
+                        )
                     # Add delay to prevent flood wait
                     await asyncio.sleep(0.1)  # 100ms delay between messages
                 except Exception as e:
@@ -133,13 +146,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if content_type == "text":
                     await update.message.reply_text(content)
                 elif content_type == "photo":
-                    await update.message.reply_photo(photo=content, caption=caption)
+                    await update.message.reply_photo(
+                        photo=content, caption=caption, protect_content=restrict
+                    )
                 elif content_type == "video":
-                    await update.message.reply_video(video=content, caption=caption)
+                    await update.message.reply_video(
+                        video=content, caption=caption, protect_content=restrict
+                    )
                 elif content_type == "audio":
-                    await update.message.reply_audio(audio=content, caption=caption)
+                    await update.message.reply_audio(
+                        audio=content, caption=caption, protect_content=restrict
+                    )
                 elif content_type == "document":
-                    await update.message.reply_document(document=content, caption=caption)
+                    await update.message.reply_document(
+                        document=content, caption=caption, protect_content=restrict
+                    )
                 else:
                     await update.message.reply_text("Unsupported content type!")
             except Exception as e:
@@ -162,7 +183,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = " ".join(context.args)
     unique_id = str(uuid.uuid4())
-    data = {"type": "text", "content": message}
+    data = {"_id": unique_id, "type": "text", "content": message}
     save_message(unique_id, data)
 
     link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
@@ -180,24 +201,24 @@ async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     batch_name = context.args[0]
     batch_data[user_id] = {"name": batch_name, "items": []}
-    await update.message.reply_text(f"Batch '{batch_name}' started. Upload media and use /makeit to generate the link.")
+    await update.message.reply_text(f"Batch '{batch_name}' started. Upload media and use /make to generate the link.")
 
-# /makeit command handler
-async def makeit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /make command handler
+async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not is_sudo_user(user_id):
         return  # Ignore non-sudo users
 
     if user_id in batch_data and batch_data[user_id]["items"]:
         unique_id = str(uuid.uuid4())
-        data = {"type": "batch", "content": batch_data[user_id]["items"]}
+        data = {"_id": unique_id, "type": "batch", "content": batch_data[user_id]["items"]}
         save_message(unique_id, data)
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await update.message.reply_text(f"Batch link generated:\n{link}")
         del batch_data[user_id]
     elif user_id in edit_data and edit_data[user_id]["items"]:
         unique_id = edit_data[user_id]["unique_id"]
-        data = {"type": "batch", "content": edit_data[user_id]["items"]}
+        data = {"_id": unique_id, "type": "batch", "content": edit_data[user_id]["items"]}
         save_message(unique_id, data)
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await update.message.reply_text(f"Link updated:\n{link}")
@@ -222,7 +243,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     edit_data[user_id] = {"unique_id": unique_id, "items": []}
-    await update.message.reply_text(f"Editing link {bot_link}. Upload media and use /makeit to update.")
+    await update.message.reply_text(f"Editing link {bot_link}. Upload media and use /make to update.")
 
 # /a command handler for approval
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,8 +265,40 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         save_approval(target_user_id, unique_id)
         await update.message.reply_text(f"User {target_user_id} approved for link {bot_link}.")
+
+        # Send message to approved user with buttons
+        keyboard = [
+            [
+                InlineKeyboardButton("Yes", callback_data=f"allow_{unique_id}_{target_user_id}"),
+                InlineKeyboardButton("No", callback_data=f"restrict_{unique_id}_{target_user_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text="You have been approved for a link. Do you want to allow forwarding and downloading?",
+            reply_markup=reply_markup
+        )
     except ValueError:
         await update.message.reply_text("Invalid user ID format!")
+    except Exception as e:
+        print(f"Error sending approval message: {e}")
+        await update.message.reply_text("Error notifying the user.")
+
+# Callback query handler for Yes/No buttons
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split("_")
+    action, unique_id, user_id = data[0], data[1], int(data[2])
+
+    if action == "allow":
+        update_restriction(unique_id, user_id, False)
+        await query.message.edit_text("You allowed forwarding and downloading for this link.")
+    elif action == "restrict":
+        update_restriction(unique_id, user_id, True)
+        await query.message.edit_text("Forwarding, downloading, and saving are restricted for this link.")
 
 # Handler for media (photo, video, audio, document)
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -280,7 +333,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # Single media link generation
         unique_id = str(uuid.uuid4())
-        save_message(unique_id, data)
+        save_message(unique_id, {"_id": unique_id, "type": data["type"], "content": data["content"], "caption": caption})
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Here is your unique link:\n{link}")
 
@@ -297,9 +350,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("An error occurred. Please try again.")
 
 def main():
-    # Initialize storage
-    init_storage()
-
     # Create the Application with rate limiting
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -307,9 +357,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("generate", generate_text))
     application.add_handler(CommandHandler("batch", batch))
-    application.add_handler(CommandHandler("makeit", makeit))
+    application.add_handler(CommandHandler("make", make))
     application.add_handler(CommandHandler("edit", edit))
     application.add_handler(CommandHandler("a", approve))
+    application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(
         MessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL,
