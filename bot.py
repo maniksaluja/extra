@@ -152,7 +152,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = {"type": "text", "content": message}
     save_message(unique_id, data)
 
-    bot_username = "@YourBot"  # Replace with your bot's username
+    bot_username = "Tes82u372bot"  # Replace with your bot's username
     link = f"https://t.me/{bot_username}?start={unique_id}"
     await update.message.reply_text(f"Here is your unique link:\n{link}")
 
