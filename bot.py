@@ -39,14 +39,14 @@ try:
     messages_collection = db[MESSAGES_COLLECTION]
     approvals_collection = db[APPROVALS_COLLECTION]
 except ConnectionFailure as e:
-    logger.error(f"MongoDB connection error: {e}")
+    logger.error(f"MongoDB error: {e}")
     exit(1)
 
 try:
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     redis_client.ping()
 except redis.ConnectionError as e:
-    logger.error(f"Redis connection error: {e}")
+    logger.error(f"Redis error: {e}")
     exit(1)
 
 def save_message(unique_id, data):
@@ -54,7 +54,7 @@ def save_message(unique_id, data):
         messages_collection.update_one({"_id": unique_id}, {"$set": data}, upsert=True)
         redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
     except Exception as e:
-        logger.error(f"Error saving message: {e}")
+        logger.error(f"Save message error: {e}")
 
 def load_message(unique_id):
     try:
@@ -66,7 +66,7 @@ def load_message(unique_id):
             redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
         return data
     except Exception as e:
-        logger.error(f"Error loading message: {e}")
+        logger.error(f"Load message error: {e}")
         return None
 
 def save_approval(user_id, unique_id):
@@ -77,7 +77,7 @@ def save_approval(user_id, unique_id):
             upsert=True
         )
     except Exception as e:
-        logger.error(f"Error saving approval: {e}")
+        logger.error(f"Save approval error: {e}")
 
 def update_restriction(unique_id, user_id, restrict):
     try:
@@ -86,7 +86,7 @@ def update_restriction(unique_id, user_id, restrict):
             {"$set": {"users.$.restrict": restrict}}
         )
     except Exception as e:
-        logger.error(f"Error updating restriction: {e}")
+        logger.error(f"Update restriction error: {e}")
 
 def check_approval(user_id, unique_id):
     try:
@@ -104,7 +104,7 @@ def check_approval(user_id, unique_id):
                     return True, restrict
         return False, False
     except Exception as e:
-        logger.error(f"Error checking approval: {e}")
+        logger.error(f"Check approval error: {e}")
         return False, False
 
 def is_sudo_user(user_id):
@@ -121,22 +121,27 @@ def get_progress_message(total, sent):
     remaining = total - sent
     est_time = remaining * 0.1
     time_str = format_time_ist(est_time)
-    return f"Total Media: {total}\nUploaded: {sent} ({percentage:.1f}%)\nApprox time remaining: {est_time:.0f}s (until {time_str} IST)"
+    return f"Total: {total}\nSent: {sent} ({percentage:.1f}%)\nTime left: {est_time:.0f}s ({time_str} IST)"
 
 def get_user_id(update: Update):
     if update.message and update.message.from_user:
         return update.message.from_user.id
     elif update.edited_message and update.edited_message.from_user:
         return update.edited_message.from_user.id
-    logger.warning("No user ID found")
+    logger.warning("No user ID")
     return None
 
 def get_all_links():
     try:
         return list(messages_collection.find())
     except Exception as e:
-        logger.error(f"Error fetching links: {e}")
+        logger.error(f"Fetch links error: {e}")
         return []
+
+def format_media_count(count):
+    if count >= 1000:
+        return f"{count // 1000}k"
+    return str(count)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -145,7 +150,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     message = update.message or update.edited_message
     if not args:
-        await message.reply_text("Welcome! Send an approved link.")
         return
     unique_id = args[0]
     if is_sudo_user(user_id):
@@ -153,14 +157,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         approved, restrict = check_approval(user_id, unique_id)
         if not approved:
-            await message.reply_text("You need approval. Contact a sudo user.")
+            keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
+            await message.reply_text("You need approval. Contact a sudo user.", reply_markup=InlineKeyboardMarkup(keyboard))
             return
     data = load_message(unique_id)
     if not data:
-        await message.reply_text("Link expired or not found!")
+        keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
+        await message.reply_text("Link expired or not found!", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     async with processing_lock:
-        user_progress[user_id] = {"sent": 0, "message_id": None, "last_update": 0}
+        user_progress[user_id] = {"sent": 0, "last_update": 0}
     if data.get("type") == "batch":
         content = data.get("content", [])
         total = len(content)
@@ -168,8 +174,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         base_delay = 0.1
         retry_count = 0
         max_retries = 5
-        progress_msg = await message.reply_text(get_progress_message(total, sent))
-        user_progress[user_id]["message_id"] = progress_msg.message_id
         for i in range(0, total, BATCH_SIZE):
             batch = content[i:i + BATCH_SIZE]
             for item in batch:
@@ -192,33 +196,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if "429" in str(e):
                         retry_count += 1
                         if retry_count > max_retries:
-                            await message.reply_text("Too many retries, stopping.")
                             return
                         backoff = base_delay * (2 ** retry_count)
                         await asyncio.sleep(backoff)
                         continue
-                    logger.error(f"Error sending media: {e}")
+                    logger.error(f"Send media error: {e}")
                     continue
                 await asyncio.sleep(base_delay)
-            current_time = time.time()
-            if current_time - user_progress[user_id]["last_update"] >= PROGRESS_UPDATE_INTERVAL:
-                try:
-                    await context.bot.edit_message_text(
-                        chat_id=message.chat_id,
-                        message_id=user_progress[user_id]["message_id"],
-                        text=get_progress_message(total, sent)
-                    )
-                    user_progress[user_id]["last_update"] = current_time
-                except TelegramError as e:
-                    logger.error(f"Error updating progress: {e}")
-        try:
-            await context.bot.edit_message_text(
-                chat_id=message.chat_id,
-                message_id=user_progress[user_id]["message_id"],
-                text=f"Upload complete! Total Media: {total}"
-            )
-        except TelegramError as e:
-            logger.error(f"Error finalizing progress: {e}")
     else:
         content_type = data.get("type")
         content = data.get("content")
@@ -234,11 +218,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
             elif content_type == "document":
                 await message.reply_document(document=content, caption=caption, protect_content=restrict)
-            else:
-                await message.reply_text("Unsupported content type!")
         except TelegramError as e:
-            logger.error(f"Error sending content: {e}")
-            await message.reply_text("Error sending content.")
+            logger.error(f"Send content error: {e}")
     async with processing_lock:
         if user_id in user_progress:
             del user_progress[user_id]
@@ -256,7 +237,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = {"_id": unique_id, "type": "text", "content": content}
     save_message(unique_id, data)
     link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
-    await message.reply_text(f"Generated link:\n{link}")
+    await message.reply_text(f"Link: {link}")
 
 async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -268,7 +249,7 @@ async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     batch_name = context.args[0]
     batch_data[user_id] = {"name": batch_name, "items": []}
-    await message.reply_text(f"Batch '{batch_name}' started. Upload media and use /make.")
+    await message.reply_text(f"Batch '{batch_name}' started. Upload media and /make.")
 
 async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -280,7 +261,7 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = {"_id": unique_id, "type": "batch", "content": batch_data[user_id]["items"], "name": batch_data[user_id]["name"]}
         save_message(unique_id, data)
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
-        await message.reply_text(f"Batch link generated:\n{link}")
+        await message.reply_text(f"Batch link: {link}")
         del batch_data[user_id]
     elif user_id in edit_data and edit_data[user_id]["items"]:
         unique_id = edit_data[user_id]["unique_id"]
@@ -290,10 +271,10 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = {"_id": unique_id, "type": "batch", "content": updated_items, "name": existing_data.get("name", "")}
         save_message(unique_id, data)
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
-        await message.reply_text(f"Link updated with {len(updated_items)} media items:\n{link}")
+        await message.reply_text(f"Link updated: {len(updated_items)} items\n{link}")
         del edit_data[user_id]
     else:
-        await message.reply_text("No batch or edit started. Use /batch or /edit.")
+        await message.reply_text("No batch/edit started. Use /batch or /edit.")
 
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -302,14 +283,13 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.edited_message
     links = get_all_links()
     if not links:
-        await message.reply_text("No links found! Use /generate or /batch.")
+        await message.reply_text("No links! Use /generate or /batch.")
         return
     keyboard = []
-    normal_count = 1
     for link in links:
         unique_id = link["_id"]
-        button_text = link.get("name") if link.get("type") == "batch" and link.get("name") else str(normal_count)
-        normal_count += 1
+        count = len(link.get("content", [])) if link.get("type") == "batch" else 1
+        button_text = format_media_count(count)
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_{unique_id}")])
     await message.reply_text("Select a link to edit:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -318,23 +298,28 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_id or not is_sudo_user(user_id):
         return
     message = update.message or update.edited_message
-    if message.forward_from:
+    if context.args:
+        try:
+            target_user_id = int(context.args[0])
+        except ValueError:
+            await message.reply_text("Invalid UserID!")
+            return
+    elif message.forward_from:
         target_user_id = message.forward_from.id
     else:
-        await message.reply_text("Forward a user's message to approve!")
+        await message.reply_text("Provide UserID or forward a message!")
         return
     links = get_all_links()
     if not links:
         await message.reply_text("No links available!")
         return
     keyboard = []
-    normal_count = 1
     for link in links:
         unique_id = link["_id"]
-        button_text = link.get("name") if link.get("type") == "batch" and link.get("name") else str(normal_count)
-        normal_count += 1
+        count = len(link.get("content", [])) if link.get("type") == "batch" else 1
+        button_text = format_media_count(count)
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"approve_{unique_id}_{target_user_id}")])
-    await message.reply_text(f"Select a link for user {target_user_id}:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await message.reply_text(f"Select link for user {target_user_id}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -349,10 +334,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         existing_data = load_message(unique_id)
         if not existing_data:
-            await query.message.edit_text("Link expired or not found!")
+            await query.message.edit_text("Link expired!")
             return
         edit_data[user_id] = {"unique_id": unique_id, "items": []}
-        await query.message.edit_text(f"Editing link {unique_id}. Upload media and use /make.")
+        await query.message.edit_text(f"Editing link {unique_id}. Upload media and /make.")
     elif action == "approve":
         unique_id = data[1]
         target_user_id = int(data[2])
@@ -361,18 +346,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("Only sudo users can approve!")
             return
         if not load_message(unique_id):
-            await query.message.edit_text("Link expired or not found!")
+            await query.message.edit_text("Link expired!")
             return
         save_approval(target_user_id, unique_id)
         keyboard = [[InlineKeyboardButton("Yes", callback_data=f"allow_{unique_id}_{target_user_id}"), InlineKeyboardButton("No", callback_data=f"restrict_{unique_id}_{target_user_id}")]]
-        await query.message.edit_text(f"User {target_user_id} approved for link {unique_id}. Allow forwarding?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.message.edit_text(f"User {target_user_id} approved for link. Allow forwarding?", reply_markup=InlineKeyboardMarkup(keyboard))
     elif action in ("allow", "restrict"):
         unique_id = data[1]
         target_user_id = int(data[2])
         restrict = action == "restrict"
         update_restriction(unique_id, target_user_id, restrict)
         status = "restricted" if restrict else "allowed"
-        await query.message.edit_text(f"Forwarding {status} for user {target_user_id} on link {unique_id}.")
+        await query.message.edit_text(f"Forwarding {status} for user {target_user_id}.")
+    elif action in ("plan_type", "buy"):
+        await query.message.edit_text(f"Clicked {action}. Contact admin for details.")
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -403,7 +390,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unique_id = str(uuid.uuid4())
         save_message(unique_id, {"_id": unique_id, "type": data["type"], "content": data["content"], "caption": caption})
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
-        await message.reply_text(f"Generated link:\n{link}")
+        await message.reply_text(f"Link: {link}")
 
 async def handle_non_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -412,7 +399,7 @@ async def handle_non_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
-    error_msg = f"Error: {context.error}. Try again."
+    error_msg = "Something went wrong. Try again."
     if update and (update.message or update.edited_message):
         await (update.message.reply_text(error_msg) if update.message else update.edited_message.reply_text(error_msg))
 
