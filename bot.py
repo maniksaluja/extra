@@ -7,10 +7,10 @@ from pymongo import MongoClient
 from pymongo.errors import ConnectionError
 
 # Configuration Section
-BOT_USERNAME = "@YourBot"  # Replace with your bot's username
-SUDO_USERS = [123456789, 987654321]  # Replace with your sudo user IDs
-BOT_TOKEN = "7739730998:AAEB8i_2hItBOj9gNYs9bDgAsrDWACAUE7k"  # Replace with your bot token
-MONGO_URI = "mongodb://localhost:27017/"  # Replace with your MongoDB URI (e.g., MongoDB Atlas URI)
+BOT_USERNAME = "Tes82u372bot"  # Replace with your bot's username
+SUDO_USERS = [7901884010]  # Replace with your sudo user IDs
+BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"  # Replace with your bot token
+MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Replace with your MongoDB URI (e.g., MongoDB Atlas URI)
 DB_NAME = "telegram_bot"
 MESSAGES_COLLECTION = "messages"
 APPROVALS_COLLECTION = "approvals"
