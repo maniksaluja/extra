@@ -116,12 +116,12 @@ def format_time_ist(seconds):
     future = now + timedelta(seconds=seconds)
     return future.strftime("%I:%M %p")
 
-def get_progress_message(total, sent):
+def get_progress_message(total, sent, skipped=0):
     percentage = (sent / total) * 100 if total > 0 else 0
     remaining = total - sent
     est_time = remaining * 0.1
     time_str = format_time_ist(est_time)
-    return f"Total: {total}\nSent: {sent} ({percentage:.1f}%)\nTime left: {est_time:.0f}s ({time_str} IST)"
+    return f"Total: {total}\nSent: {sent} ({percentage:.1f}%)\nSkipped: {skipped}\nTime left: {est_time:.0f}s ({time_str} IST)"
 
 def get_user_id(update: Update):
     if update.message and update.message.from_user:
@@ -166,14 +166,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Link expired!", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     async with processing_lock:
-        user_progress[user_id] = {"sent": 0, "last_update": 0}
+        user_progress[user_id] = {"sent": 0, "last_update": 0, "skipped": 0, "progress_message_id": None}
     if data.get("type") == "batch":
         content = data.get("content", [])
         total = len(content)
         sent = 0
+        skipped = 0
         base_delay = 0.1
         retry_count = 0
         max_retries = 5
+        progress_msg = await message.reply_text(get_progress_message(total, sent, skipped))
+        await context.bot.pin_chat_message(chat_id=message.chat_id, message_id=progress_msg.message_id)
+        user_progress[user_id]["progress_message_id"] = progress_msg.message_id
         for i in range(0, total, BATCH_SIZE):
             batch = content[i:i + BATCH_SIZE]
             for item in batch:
@@ -196,13 +200,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if "429" in str(e):
                         retry_count += 1
                         if retry_count > max_retries:
-                            return
+                            skipped += 1
+                            user_progress[user_id]["skipped"] = skipped
+                            continue
                         backoff = base_delay * (2 ** retry_count)
                         await asyncio.sleep(backoff)
                         continue
                     logger.error(f"Send media error: {e}")
+                    skipped += 1
+                    user_progress[user_id]["skipped"] = skipped
                     continue
+                current_time = time.time()
+                if current_time - user_progress[user_id]["last_update"] >= PROGRESS_UPDATE_INTERVAL:
+                    await context.bot.edit_message_text(
+                        chat_id=message.chat_id,
+                        message_id=user_progress[user_id]["progress_message_id"],
+                        text=get_progress_message(total, sent, skipped)
+                    )
+                    user_progress[user_id]["last_update"] = current_time
                 await asyncio.sleep(base_delay)
+        await context.bot.edit_message_text(
+            chat_id=message.chat_id,
+            message_id=user_progress[user_id]["progress_message_id"],
+            text=get_progress_message(total, sent, skipped)
+        )
     else:
         content_type = data.get("type")
         content = data.get("content")
@@ -216,12 +237,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_video(video=content, caption=caption, protect_content=restrict)
             elif content_type == "audio":
                 await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
-            elif content_type == "document":
-                await message.reply_document(document=content, caption=caption, protect_content=restrict)
+            elif content_type шесть
+
+await message.reply_document(document=content, caption=caption, protect_content=restrict)
         except TelegramError as e:
             logger.error(f"Send content error: {e}")
     async with processing_lock:
         if user_id in user_progress:
+            if user_progress[user_id]["progress_message_id"]:
+                try:
+                    await context.bot.unpin_chat_message(
+                        chat_id=message.chat_id,
+                        message_id=user_progress[user_id]["progress_message_id"]
+                    )
+                except TelegramError as e:
+                    logger.error(f"Unpin message error: {e}")
             del user_progress[user_id]
 
 async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,6 +351,121 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"approve_{unique_id}_{target_user_id}")])
     await message.reply_text(f"Select link for user {target_user_id}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = get_user_id(update)
+    if not user_id or not is_sudo_user(user_id):
+        await update.message.reply_text("Only sudo users can use /add!")
+        return
+    message = update.message or update.edited_message
+    if len(context.args) != 2:
+        await message.reply_text("Usage: /add <start_copylink> <end_copylink>")
+        return
+    start_link, end_link = context.args
+    try:
+        start_parts = start_link.split("/")
+        end_parts = end_link.split("/")
+        if len(start_parts) < 4 or len(end_parts) < 4:
+            await message.reply_text("Invalid copy links!")
+            return
+        chat_id = f"-100{start_parts[-2]}"
+        start_message_id = int(start_parts[-1])
+        end_message_id = int(end_parts[-1])
+        if start_message_id > end_message_id:
+            await message.reply_text("Start message ID must be less than end message ID!")
+            return
+    except ValueError:
+        await message.reply_text("Invalid message IDs in copy links!")
+        return
+    batch_name = f"channel_batch_{uuid.uuid4().hex[:8]}"
+    batch_data[user_id] = {"name": batch_name, "items": []}
+    total = end_message_id - start_message_id + 1
+    sent = 0
+    skipped = 0
+    base_delay = 0.1
+    retry_count = 0
+    max_retries = 5
+    async with processing_lock:
+        user_progress[user_id] = {"sent": 0, "last_update": 0, "skipped": 0, "progress_message_id": None}
+    progress_msg = await message.reply_text(get_progress_message(total, sent, skipped))
+    await context.bot.pin_chat_message(chat_id=message.chat_id, message_id=progress_msg.message_id)
+    user_progress[user_id]["progress_message_id"] = progress_msg.message_id
+    for message_id in range(start_message_id, end_message_id + 1):
+        try:
+            msg = await context.bot.get_chat(chat_id).get_message(message_id)
+            data = None
+            caption = msg.caption or ""
+            if msg.photo:
+                file_id = msg.photo[-1].file_id
+                data = {"type": "photo", "content": file_id, "caption": caption}
+            elif msg.video:
+                file_id = msg.video.file_id
+                data = {"type": "video", "content": file_id, "caption": caption}
+            elif msg.audio:
+                file_id = msg.audio.file_id
+                data = {"type": "audio", "content": file_id, "caption": caption}
+            elif msg.document:
+                file_id = msg.document.file_id
+                data = {"type": "document", "content": file_id, "caption": caption}
+            else:
+                skipped += 1
+                user_progress[user_id]["skipped"] = skipped
+                continue
+            batch_data[user_id]["items"].append(data)
+            sent += 1
+            user_progress[user_id]["sent"] = sent
+            retry_count = 0
+        except TelegramError as e:
+            if "429" in str(e):
+                retry_count += 1
+                if retry_count > max_retries:
+                    skipped += 1
+                    user_progress[user_id]["skipped"] = skipped
+                    continue
+                backoff = base_delay * (2 ** retry_count)
+                await asyncio.sleep(backoff)
+                continue
+            logger.error(f"Fetch message error: {e}")
+            skipped += 1
+            user_progress[user_id]["skipped"] = skipped
+            continue
+        current_time = time.time()
+        if current_time - user_progress[user_id]["last_update"] >= PROGRESS_UPDATE_INTERVAL:
+            await context.bot.edit_message_text(
+                chat_id=message.chat_id,
+                message_id=user_progress[user_id]["progress_message_id"],
+                text=get_progress_message(total, sent, skipped)
+            )
+            user_progress[user_id]["last_update"] = current_time
+        await asyncio.sleep(base_delay)
+    if batch_data[user_id]["items"]:
+        unique_id = str(uuid.uuid4())
+        data = {"_id": unique_id, "type": "batch", "content": batch_data[user_id]["items"], "name": batch_name}
+        save_message(unique_id, data)
+        link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
+        await context.bot.edit_message_text(
+            chat_id=message.chat_id,
+            message_id=user_progress[user_id]["progress_message_id"],
+            text=f"{get_progress_message(total, sent, skipped)}\nBatch link: {link}"
+        )
+        del batch_data[user_id]
+    else:
+        await context.bot.edit_message_text(
+            chat_id=message.chat_id,
+            message_id=user_progress[user_id]["progress_message_id"],
+            text="No valid media found between the specified links."
+        )
+    async with processing_lock:
+        if user_id in user_progress:
+            if user_progress[user_id]["progress_message_id"]:
+                try:
+                    await context.bot.unpin_chat_message(
+                        chat_id=message.chat_id,
+                        message_id=user_progress[user_id]["progress_message_id"]
+                    )
+                except TelegramError as e:
+                    logger.error(f"Unpin message error: {e}")
+            del user_progress[user_id]
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -330,7 +475,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unique_id = data[1]
         user_id = query.from_user.id
         if not is_sudo_user(user_id):
-            await query.message.edit_text("Only sudo users can edit!")
+            await query.health_check.edit_text("Only sudo users can edit!")
             return
         existing_data = load_message(unique_id)
         if not existing_data:
@@ -420,10 +565,11 @@ def main():
     application.add_handler(CommandHandler("make", make))
     application.add_handler(CommandHandler("edit", edit))
     application.add_handler(CommandHandler("a", approve))
+    application.add_handler(CommandHandler("add", add))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL, handle_media))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_non_sudo))
-    application.add_error_handler(error_handler)
+    application.add_handler(error_handler)
     logger.info("Bot running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
