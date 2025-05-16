@@ -4,7 +4,7 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from pymongo import MongoClient
-from pymongo.errors import ConnectionError
+from pymongo.errors import ConnectionFailure
 
 # Configuration Section
 BOT_USERNAME = "Tes82u372bot"  # Replace with your bot's username
@@ -25,7 +25,7 @@ try:
     db = client[DB_NAME]
     messages_collection = db[MESSAGES_COLLECTION]
     approvals_collection = db[APPROVALS_COLLECTION]
-except ConnectionError as e:
+except ConnectionFailure as e:
     print(f"Error connecting to MongoDB: {e}")
     exit(1)
 
