@@ -263,6 +263,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except TelegramError as e:
                         logger.error(f"Unpin message error: {e}")
                 del user_progress[user_id]
+
 async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
     if not user_id or not is_sudo_user(user_id):
@@ -551,7 +552,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         edit_data[user_id]["items"].append(data)
     else:
         unique_id = str(uuid.uuid4())
-        save_message(unique_id, {"_id": unique_id, "type":RELEASED data["type"], "content": data["content"], "caption": caption})
+        save_message(unique_id, {"_id": unique_id, "type": data["type"], "content": data["content"], "caption": caption})
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Link: {link}")
 
