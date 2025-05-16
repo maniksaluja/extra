@@ -158,12 +158,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         approved, restrict = check_approval(user_id, unique_id)
         if not approved:
             keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
-            await message.reply_text("You need approval. Contact a sudo user.", reply_markup=InlineKeyboardMarkup(keyboard))
+            await message.reply_text("You need approval.", reply_markup=InlineKeyboardMarkup(keyboard))
             return
     data = load_message(unique_id)
     if not data:
         keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
-        await message.reply_text("Link expired or not found!", reply_markup=InlineKeyboardMarkup(keyboard))
+        await message.reply_text("Link expired!", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     async with processing_lock:
         user_progress[user_id] = {"sent": 0, "last_update": 0}
@@ -230,7 +230,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     message = update.message or update.edited_message
     if not context.args:
-        await message.reply_text("Provide a message: /generate <message>")
+        await message.reply_text("Provide message: /generate <message>")
         return
     content = " ".join(context.args)
     unique_id = str(uuid.uuid4())
@@ -245,7 +245,7 @@ async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     message = update.message or update.edited_message
     if not context.args:
-        await message.reply_text("Provide a batch name: /batch <name>")
+        await message.reply_text("Provide batch name: /batch <name>")
         return
     batch_name = context.args[0]
     batch_data[user_id] = {"name": batch_name, "items": []}
@@ -291,7 +291,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = len(link.get("content", [])) if link.get("type") == "batch" else 1
         button_text = format_media_count(count)
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_{unique_id}")])
-    await message.reply_text("Select a link to edit:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await message.reply_text("Select link to edit:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -307,7 +307,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif message.forward_from:
         target_user_id = message.forward_from.id
     else:
-        await message.reply_text("Provide UserID or forward a message!")
+        await message.reply_text("Provide UserID or forward message!")
         return
     links = get_all_links()
     if not links:
@@ -349,17 +349,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("Link expired!")
             return
         save_approval(target_user_id, unique_id)
-        keyboard = [[InlineKeyboardButton("Yes", callback_data=f"allow_{unique_id}_{target_user_id}"), InlineKeyboardButton("No", callback_data=f"restrict_{unique_id}_{target_user_id}")]]
-        await query.message.edit_text(f"User {target_user_id} approved for link. Allow forwarding?", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [
+            [InlineKeyboardButton("Yes", callback_data=f"allow_{unique_id}_{target_user_id}"),
+             InlineKeyboardButton("No", callback_data=f"restrict_{unique_id}_{target_user_id}")],
+            [InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]
+        ]
+        await query.message.edit_text(f"User {target_user_id} approved. Allow forwarding?", reply_markup=InlineKeyboardMarkup(keyboard))
     elif action in ("allow", "restrict"):
         unique_id = data[1]
         target_user_id = int(data[2])
         restrict = action == "restrict"
         update_restriction(unique_id, target_user_id, restrict)
         status = "restricted" if restrict else "allowed"
-        await query.message.edit_text(f"Forwarding {status} for user {target_user_id}.")
+        keyboard = [[InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]]
+        await query.message.edit_text(f"Forwarding {status} for user {target_user_id}.", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif action == "share":
+        unique_id = data[1]
+        share_url = f"https://telegram.me/share/url?url=https://t.me/{BOT_USERNAME}?start={unique_id}"
+        await query.message.edit_text(f"Share this link: https://t.me/{BOT_USERNAME}?start={unique_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Share Link", url=share_url)]]))
     elif action in ("plan_type", "buy"):
-        await query.message.edit_text(f"Clicked {action}. Contact admin for details.")
+        await query.message.edit_text(f"Clicked {action}. Contact admin.")
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -399,7 +408,7 @@ async def handle_non_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
-    error_msg = "Something went wrong. Try again."
+    error_msg = "Something went wrong."
     if update and (update.message or update.edited_message):
         await (update.message.reply_text(error_msg) if update.message else update.edited_message.reply_text(error_msg))
 
