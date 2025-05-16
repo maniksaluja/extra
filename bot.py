@@ -241,8 +241,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_document(document=content, caption=caption, protect_content=restrict)
         except TelegramError as e:
             logger.error(f"Send content error: {e}")
-
-async with processing_lock:
+            async with processing_lock:
         if user_id in user_progress:
             if user_progress[user_id]["progress_message_id"]:
                 try:
