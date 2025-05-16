@@ -10,7 +10,7 @@ from pymongo.errors import ConnectionFailure
 BOT_USERNAME = "Tes82u372bot"  # Replace with your bot's username
 SUDO_USERS = [7901884010]  # Replace with your sudo user IDs
 BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"  # Replace with your bot token
-MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Replace with your MongoDB URI (e.g., MongoDB Atlas URI)
+MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  # Replace with your MongoDB URI
 DB_NAME = "telegram_bot"
 MESSAGES_COLLECTION = "messages"
 APPROVALS_COLLECTION = "approvals"
@@ -218,10 +218,17 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del batch_data[user_id]
     elif user_id in edit_data and edit_data[user_id]["items"]:
         unique_id = edit_data[user_id]["unique_id"]
-        data = {"_id": unique_id, "type": "batch", "content": edit_data[user_id]["items"]}
+        # Load existing content and append new items
+        existing_data = load_message(unique_id)
+        if existing_data and existing_data.get("type") == "batch":
+            existing_items = existing_data.get("content", [])
+        else:
+            existing_items = []
+        updated_items = existing_items + edit_data[user_id]["items"]
+        data = {"_id": unique_id, "type": "batch", "content": updated_items}
         save_message(unique_id, data)
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
-        await update.message.reply_text(f"Link updated:\n{link}")
+        await update.message.reply_text(f"Link updated with {len(updated_items)} media items:\n{link}")
         del edit_data[user_id]
     else:
         await update.message.reply_text("No batch or edit started, or no media uploaded. Use /batch or /edit first.")
@@ -238,12 +245,13 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_link = context.args[0]
     unique_id = bot_link.split("start=")[-1]
-    if not load_message(unique_id):
-        await update.message.reply_text("Invalid or expired link!")
+    existing_data = load_message(unique_id)
+    if not existing_data or existing_data.get("type") != "batch":
+        await update.message.reply_text("Invalid or expired link, or not a batch link!")
         return
 
     edit_data[user_id] = {"unique_id": unique_id, "items": []}
-    await update.message.reply_text(f"Editing link {bot_link}. Upload media and use /make to update.")
+    await update.message.reply_text(f"Editing link {bot_link}. Upload media and use /make to append and update.")
 
 # /a command handler for approval
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
