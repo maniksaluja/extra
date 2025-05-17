@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 BOT_USERNAME = "Tes82u372bot"
 SUDO_USERS = [7901884010]
-BOT_TOKEN = "7739730998:AAENcYZ9QKYb5VeeW9mF746TJO1aje2KdOA"  # Updated to match logs
+BOT_TOKEN = "7739730998:AAENcYZ9QKYb5VeeW9mF746TJO1aje2KdOA"
 MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
@@ -25,20 +25,24 @@ REDIS_DB = 0
 DB_NAME = "telegram_bot"
 MESSAGES_COLLECTION = "messages"
 APPROVALS_COLLECTION = "approvals"
+SETTINGS_COLLECTION = "settings"  # New collection for worker limit
 BATCH_SIZE = 100
 PROGRESS_UPDATE_INTERVAL = 30
-VIDEO_SEND_DELAY = 0.5  # Added delay to prevent rate limiting
+VIDEO_SEND_DELAY = 0.5
+DEFAULT_WORKERS = 50  # Default to 3 concurrent users
 
 batch_data = {}
 edit_data = {}
 user_progress = {}
 processing_lock = asyncio.Lock()
+worker_semaphore = None  # Will be initialized after loading worker limit
 
 try:
     client = MongoClient(MONGO_URI)
     db = client[DB_NAME]
     messages_collection = db[MESSAGES_COLLECTION]
     approvals_collection = db[APPROVALS_COLLECTION]
+    settings_collection = db[SETTINGS_COLLECTION]
 except ConnectionFailure as e:
     logger.error(f"MongoDB error: {e}")
     exit(1)
@@ -49,6 +53,20 @@ try:
 except redis.ConnectionError as e:
     logger.error(f"Redis error: {e}")
     exit(1)
+
+# Initialize worker semaphore
+def init_worker_semaphore():
+    global worker_semaphore
+    try:
+        settings = settings_collection.find_one({"_id": "worker_limit"})
+        worker_limit = settings.get("workers", DEFAULT_WORKERS) if settings else DEFAULT_WORKERS
+        worker_semaphore = asyncio.Semaphore(worker_limit)
+        logger.info(f"Initialized worker semaphore with {worker_limit} workers")
+    except Exception as e:
+        logger.error(f"Init worker semaphore error: {e}")
+        worker_semaphore = asyncio.Semaphore(DEFAULT_WORKERS)
+
+init_worker_semaphore()
 
 def save_message(unique_id, data):
     try:
@@ -185,62 +203,63 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     async with processing_lock:
         user_progress[user_id] = {"sent": 0, "last_update": 0}
-    if data.get("type") == "batch":
-        content = data.get("content", [])
-        total = len(content)
-        sent = 0
-        retry_count = 0
-        max_retries = 5
-        for i in range(0, total, BATCH_SIZE):
-            batch = content[i:i + BATCH_SIZE]
-            for item in batch:
-                content_type = item.get("type")
-                content = item.get("content")
-                caption = item.get("caption", "")
-                try:
-                    if content_type == "photo":
-                        await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
-                    elif content_type == "video":
-                        await message.reply_video(video=content, caption=caption, protect_content=restrict)
-                    elif content_type == "audio":
-                        await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
-                    elif content_type == "document":
-                        await message.reply_document(document=content, caption=caption, protect_content=restrict)
-                    sent += 1
-                    user_progress[user_id]["sent"] = sent
-                    retry_count = 0
-                except TelegramError as e:
-                    if "429" in str(e):
-                        retry_count += 1
-                        if retry_count > max_retries:
-                            await message.reply_text("Rate limit exceeded. Please try again later.")
-                            return
-                        backoff = VIDEO_SEND_DELAY * (2 ** retry_count)
-                        await asyncio.sleep(backoff)
+    async with worker_semaphore:  # Limit concurrent users
+        if data.get("type") == "batch":
+            content = data.get("content", [])
+            total = len(content)
+            sent = 0
+            retry_count = 0
+            max_retries = 5
+            for i in range(0, total, BATCH_SIZE):
+                batch = content[i:i + BATCH_SIZE]
+                for item in batch:
+                    content_type = item.get("type")
+                    content = item.get("content")
+                    caption = item.get("caption", "")
+                    try:
+                        if content_type == "photo":
+                            await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
+                        elif content_type == "video":
+                            await message.reply_video(video=content, caption=caption, protect_content=restrict)
+                        elif content_type == "audio":
+                            await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
+                        elif content_type == "document":
+                            await message.reply_document(document=content, caption=caption, protect_content=restrict)
+                        sent += 1
+                        user_progress[user_id]["sent"] = sent
+                        retry_count = 0
+                    except TelegramError as e:
+                        if "429" in str(e):
+                            retry_count += 1
+                            if retry_count > max_retries:
+                                await message.reply_text("Rate limit exceeded. Please try again later.")
+                                return
+                            backoff = VIDEO_SEND_DELAY * (2 ** retry_count)
+                            await asyncio.sleep(backoff)
+                            continue
+                        logger.error(f"Send media error: {e}")
                         continue
-                    logger.error(f"Send media error: {e}")
-                    continue
-                await asyncio.sleep(VIDEO_SEND_DELAY)  # Added delay to prevent rate limiting
-    else:
-        content_type = data.get("type")
-        content = data.get("content")
-        caption = data.get("caption", "")
-        try:
-            if content_type == "text":
-                await message.reply_text(content)
-            elif content_type == "photo":
-                await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
-            elif content_type == "video":
-                await message.reply_video(video=content, caption=caption, protect_content=restrict)
-            elif content_type == "audio":
-                await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
-            elif content_type == "document":
-                await message.reply_document(document=content, caption=caption, protect_content=restrict)
-        except TelegramError as e:
-            logger.error(f"Send content error: {e}")
-    async with processing_lock:
-        if user_id in user_progress:
-            del user_progress[user_id]
+                    await asyncio.sleep(VIDEO_SEND_DELAY)
+        else:
+            content_type = data.get("type")
+            content = data.get("content")
+            caption = data.get("caption", "")
+            try:
+                if content_type == "text":
+                    await message.reply_text(content)
+                elif content_type == "photo":
+                    await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
+                elif content_type == "video":
+                    await message.reply_video(video=content, caption=caption, protect_content=restrict)
+                elif content_type == "audio":
+                    await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
+                elif content_type == "document":
+                    await message.reply_document(document=content, caption=caption, protect_content=restrict)
+            except TelegramError as e:
+                logger.error(f"Send content error: {e}")
+        async with processing_lock:
+            if user_id in user_progress:
+                del user_progress[user_id]
 
 async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -259,7 +278,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
-    if not user_id or not isudo_user(user_id):
+    if not user_id or not is_sudo_user(user_id):
         return
     message = update.message or update.edited_message
     if not context.args:
@@ -310,6 +329,30 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         button_text = format_media_count(count)
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_{unique_id}")])
     await message.reply_text("Select link to edit:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def setworkers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = get_user_id(update)
+    if not user_id or not is_sudo_user(user_id):
+        return
+    message = update.message or update.edited_message
+    if not context.args:
+        await message.reply_text("Provide number of workers: /setworkers <number>")
+        return
+    try:
+        workers = int(context.args[0])
+        if workers < 1:
+            await message.reply_text("Number of workers must be at least 1!")
+            return
+        settings_collection.update_one(
+            {"_id": "worker_limit"},
+            {"$set": {"workers": workers}},
+            upsert=True
+        )
+        global worker_semaphore
+        worker_semaphore = asyncio.Semaphore(workers)
+        await message.reply_text(f"Set worker limit to {workers} concurrent users.")
+    except ValueError:
+        await message.reply_text("Invalid number! Use /setworkers <number>")
 
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -466,6 +509,7 @@ def main():
     application.add_handler(CommandHandler("batch", batch))
     application.add_handler(CommandHandler("make", make))
     application.add_handler(CommandHandler("edit", edit))
+    application.add_handler(CommandHandler("setworkers", setworkers))
     application.add_handler(CommandHandler("a", approve))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL, handle_media))
