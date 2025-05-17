@@ -79,6 +79,16 @@ def save_approval(user_id, unique_id):
     except Exception as e:
         logger.error(f"Save approval error: {e}")
 
+def save_global_approval(unique_id):
+    try:
+        approvals_collection.update_one(
+            {"_id": unique_id},
+            {"$set": {"global_approval": True}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"Save global approval error: {e}")
+
 def update_restriction(unique_id, user_id, restrict):
     try:
         approvals_collection.update_one(
@@ -92,6 +102,13 @@ def check_approval(user_id, unique_id):
     try:
         result = approvals_collection.find_one({"_id": unique_id})
         if result:
+            if result.get("global_approval", False):
+                user_restriction = result.get("default_restrict", False)
+                for user in result.get("users", []):
+                    if user["user_id"] == user_id:
+                        user_restriction = user.get("restrict", False)
+                        break
+                return True, user_restriction
             for user in result.get("users", []):
                 if user["user_id"] == user_id:
                     restrict = user.get("restrict", False)
@@ -99,7 +116,7 @@ def check_approval(user_id, unique_id):
                         {"_id": unique_id},
                         {"$pull": {"users": {"user_id": user_id}}}
                     )
-                    if not approvals_collection.find_one({"_id": unique_id})["users"]:
+                    if not approvals_collection.find_one({"_id": unique_id})["users"] and not result.get("global_approval", False):
                         approvals_collection.delete_one({"_id": unique_id})
                     return True, restrict
         return False, False
@@ -298,28 +315,44 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_id or not is_sudo_user(user_id):
         return
     message = update.message or update.edited_message
-    if context.args:
+    if not context.args:
+        await message.reply_text("Provide UserID or link!")
+        return
+    arg = context.args[0]
+    is_link = arg.startswith(f"https://t.me/{BOT_USERNAME}?start=")
+    if is_link:
         try:
-            target_user_id = int(context.args[0])
-        except ValueError:
-            await message.reply_text("Invalid UserID!")
+            unique_id = arg.split("start=")[1]
+            if not load_message(unique_id):
+                await message.reply_text("Invalid or expired link!")
+                return
+            save_global_approval(unique_id)
+            keyboard = [
+                [InlineKeyboardButton("Yes", callback_data=f"allow_{unique_id}_0"),
+                 InlineKeyboardButton("No", callback_data=f"restrict_{unique_id}_0")],
+                [InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]
+            ]
+            await message.reply_text(f"Link approved for all users. Allow forwarding?", reply_markup=InlineKeyboardMarkup(keyboard))
+        except (IndexError, ValueError):
+            await message.reply_text("Invalid link format!")
             return
-    elif message.forward_from:
-        target_user_id = message.forward_from.id
     else:
-        await message.reply_text("Provide UserID or forward message!")
-        return
-    links = get_all_links()
-    if not links:
-        await message.reply_text("No links available!")
-        return
-    keyboard = []
-    for link in links:
-        unique_id = link["_id"]
-        count = len(link.get("content", [])) if link.get("type") == "batch" else 1
-        button_text = format_media_count(count)
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"approve_{unique_id}_{target_user_id}")])
-    await message.reply_text(f"Select link for user {target_user_id}:", reply_markup=InlineKeyboardMarkup(keyboard))
+        try:
+            target_user_id = int(arg)
+        except ValueError:
+            await message.reply_text("Invalid UserID or link!")
+            return
+        links = get_all_links()
+        if not links:
+            await message.reply_text("No links available!")
+            return
+        keyboard = []
+        for link in links:
+            unique_id = link["_id"]
+            count = len(link.get("content", [])) if link.get("type") == "batch" else 1
+            button_text = format_media_count(count)
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"approve_{unique_id}_{target_user_id}")])
+        await message.reply_text(f"Select link for user {target_user_id}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -359,10 +392,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unique_id = data[1]
         target_user_id = int(data[2])
         restrict = action == "restrict"
-        update_restriction(unique_id, target_user_id, restrict)
-        status = "restricted" if restrict else "allowed"
-        keyboard = [[InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]]
-        await query.message.edit_text(f"Forwarding {status} for user {target_user_id}.", reply_markup=InlineKeyboardMarkup(keyboard))
+        user_id = query.from_user.id
+        if not is_sudo_user(user_id):
+            await query.message.edit_text("Only sudo users can modify restrictions!")
+            return
+        if target_user_id == 0:
+            approvals_collection.update_one(
+                {"_id": unique_id},
+                {"$set": {"default_restrict": restrict}}
+            )
+            status = "restricted" if restrict else "allowed"
+            keyboard = [[InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]]
+            await query.message.edit_text(f"Forwarding {status} for all users.", reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            update_restriction(unique_id, target_user_id, restrict)
+            status = "restricted" if restrict else "allowed"
+            keyboard = [[InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]]
+            await query.message.edit_text(f"Forwarding {status} for user {target_user_id}.", reply_markup=InlineKeyboardMarkup(keyboard))
     elif action == "share":
         unique_id = data[1]
         share_url = f"https://telegram.me/share/url?url=https://t.me/{BOT_USERNAME}?start={unique_id}"
