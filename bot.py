@@ -15,7 +15,7 @@ from pymongo.errors import ConnectionFailure
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_USERNAME = "Tes82u372bot"
+BOT_USERNAME = "DarkTestBot"
 SUDO_USERS = [7901884010]
 BOT_TOKEN = "8145736202:AAEqjJa62tuj40TPaYehFkAJOVJiQk6doLw"
 MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
