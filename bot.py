@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 BOT_USERNAME = "DarkTestBot"
 SUDO_USERS = [7901884010]
-BOT_TOKEN = "7739730998:AAEB8i_2hItBOj9gNYs9bDgAsrDWACAUE7k"
+BOT_TOKEN = "7739730998:AAENcYZ9QKYb5VeeW9mF746TJO1aje2KdOA"
 MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
