@@ -12,7 +12,6 @@ from telegram.error import TelegramError
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
-# Improved logger with custom format
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s',
     level=logging.INFO
@@ -36,14 +35,14 @@ SETTINGS_COLLECTION = "settings"
 BATCH_SIZE = 100
 PROGRESS_UPDATE_INTERVAL = 30
 VIDEO_SEND_DELAY = 0.5
-DEFAULT_WORKERS = 50
+DEFAULT_WORKERS = 3
 
 batch_data = {}
 edit_data = {}
 user_progress = {}
 processing_lock = asyncio.Lock()
 worker_semaphore = None
-pending_messages = {}  # Track pending message IDs for users
+pending_messages = {}
 
 try:
     client = MongoClient(MONGO_URI)
@@ -221,7 +220,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     async with processing_lock:
         user_progress[user_id] = {"sent": 0, "last_update": 0}
-    # Send pending message if worker limit is reached
     pending_msg = None
     if worker_semaphore.locked():
         pending_msg = await message.reply_text("Please wait, processing your request...")
@@ -229,7 +227,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("User queued due to worker limit", extra={"user_id": user_id, "action": "start"})
     async with worker_semaphore:
         logger.info("Worker acquired", extra={"user_id": user_id, "action": "start"})
-        # Delete pending message if it exists
         if user_id in pending_messages:
             try:
                 await context.bot.delete_message(chat_id=message.chat_id, message_id=pending_messages[user_id])
@@ -569,20 +566,25 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await (update.message.reply_text(error_msg) if update.message else update.edited_message.reply_text(error_msg))
 
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("generate", generate_text))
-    application.add_handler(CommandHandler("batch", batch))
-    application.add_handler(CommandHandler("make", make))
-    application.add_handler(CommandHandler("edit", edit))
-    application.add_handler(CommandHandler("setworkers", setworkers))
-    application.add_handler(CommandHandler("a", approve))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL, handle_media))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_non_sudo))
-    application.add_error_handler(error_handler)
-    logger.info("Bot started", extra={"user_id": "N/A", "action": "main"})
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        application = Application.builder().token(BOT_TOKEN).get_updates_timeout(30).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("generate", generate_text))
+        application.add_handler(CommandHandler("batch", batch))
+        application.add_handler(CommandHandler("make", make))
+        application.add_handler(CommandHandler("edit", edit))
+        application.add_handler(CommandHandler("setworkers", setworkers))
+        application.add_handler(CommandHandler("a", approve))
+        application.add_handler(CallbackQueryHandler(button_callback))
+        application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL, handle_media))
+        application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_non_sudo))
+        application.add_error_handler(error_handler)
+        logger.info("Bot started", extra={"user_id": "N/A", "action": "main"})
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"Polling failed: {e}", extra={"user_id": "N/A", "action": "main"})
+        time.sleep(5)  # Wait before restarting
+        main()  # Restart polling
 
 if __name__ == "__main__":
     main()
