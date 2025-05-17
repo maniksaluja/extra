@@ -12,8 +12,15 @@ from telegram.error import TelegramError
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Improved logger with custom format
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
+logging.getLogger().handlers[0].setFormatter(
+    logging.Formatter('%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s')
+)
 
 BOT_USERNAME = "Tes82u372bot"
 SUDO_USERS = [7901884010]
@@ -25,17 +32,18 @@ REDIS_DB = 0
 DB_NAME = "telegram_bot"
 MESSAGES_COLLECTION = "messages"
 APPROVALS_COLLECTION = "approvals"
-SETTINGS_COLLECTION = "settings"  # New collection for worker limit
+SETTINGS_COLLECTION = "settings"
 BATCH_SIZE = 100
 PROGRESS_UPDATE_INTERVAL = 30
 VIDEO_SEND_DELAY = 0.5
-DEFAULT_WORKERS = 50  # Default to 3 concurrent users
+DEFAULT_WORKERS = 3
 
 batch_data = {}
 edit_data = {}
 user_progress = {}
 processing_lock = asyncio.Lock()
-worker_semaphore = None  # Will be initialized after loading worker limit
+worker_semaphore = None
+pending_messages = {}  # Track pending message IDs for users
 
 try:
     client = MongoClient(MONGO_URI)
@@ -44,26 +52,25 @@ try:
     approvals_collection = db[APPROVALS_COLLECTION]
     settings_collection = db[SETTINGS_COLLECTION]
 except ConnectionFailure as e:
-    logger.error(f"MongoDB error: {e}")
+    logger.error("MongoDB connection failed", extra={"user_id": "N/A", "action": "db_connect"})
     exit(1)
 
 try:
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     redis_client.ping()
 except redis.ConnectionError as e:
-    logger.error(f"Redis error: {e}")
+    logger.error("Redis connection failed", extra={"user_id": "N/A", "action": "db_connect"})
     exit(1)
 
-# Initialize worker semaphore
 def init_worker_semaphore():
     global worker_semaphore
     try:
         settings = settings_collection.find_one({"_id": "worker_limit"})
         worker_limit = settings.get("workers", DEFAULT_WORKERS) if settings else DEFAULT_WORKERS
         worker_semaphore = asyncio.Semaphore(worker_limit)
-        logger.info(f"Initialized worker semaphore with {worker_limit} workers")
+        logger.info(f"Initialized worker semaphore with {worker_limit} workers", extra={"user_id": "N/A", "action": "init_workers"})
     except Exception as e:
-        logger.error(f"Init worker semaphore error: {e}")
+        logger.error(f"Init worker semaphore failed: {e}", extra={"user_id": "N/A", "action": "init_workers"})
         worker_semaphore = asyncio.Semaphore(DEFAULT_WORKERS)
 
 init_worker_semaphore()
@@ -72,8 +79,9 @@ def save_message(unique_id, data):
     try:
         messages_collection.update_one({"_id": unique_id}, {"$set": data}, upsert=True)
         redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
+        logger.info(f"Saved message {unique_id}", extra={"user_id": "N/A", "action": "save_message"})
     except Exception as e:
-        logger.error(f"Save message error: {e}")
+        logger.error(f"Save message failed: {e}", extra={"user_id": "N/A", "action": "save_message"})
 
 def load_message(unique_id):
     try:
@@ -83,9 +91,10 @@ def load_message(unique_id):
         data = messages_collection.find_one({"_id": unique_id})
         if data:
             redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
+            logger.info(f"Loaded message {unique_id} from MongoDB", extra={"user_id": "N/A", "action": "load_message"})
         return data
     except Exception as e:
-        logger.error(f"Load message error: {e}")
+        logger.error(f"Load message failed: {e}", extra={"user_id": "N/A", "action": "load_message"})
         return None
 
 def save_approval(user_id, unique_id):
@@ -95,8 +104,9 @@ def save_approval(user_id, unique_id):
             {"$addToSet": {"users": {"user_id": user_id, "restrict": None}}},
             upsert=True
         )
+        logger.info(f"Saved approval for user {user_id} on {unique_id}", extra={"user_id": user_id, "action": "save_approval"})
     except Exception as e:
-        logger.error(f"Save approval error: {e}")
+        logger.error(f"Save approval failed: {e}", extra={"user_id": user_id, "action": "save_approval"})
 
 def save_global_approval(unique_id):
     try:
@@ -105,8 +115,9 @@ def save_global_approval(unique_id):
             {"$set": {"global_approval": True}},
             upsert=True
         )
+        logger.info(f"Saved global approval for {unique_id}", extra={"user_id": "N/A", "action": "save_global_approval"})
     except Exception as e:
-        logger.error(f"Save global approval error: {e}")
+        logger.error(f"Save global approval failed: {e}", extra={"user_id": "N/A", "action": "save_global_approval"})
 
 def update_restriction(unique_id, user_id, restrict):
     try:
@@ -114,8 +125,9 @@ def update_restriction(unique_id, user_id, restrict):
             {"_id": unique_id, "users.user_id": user_id},
             {"$set": {"users.$.restrict": restrict}}
         )
+        logger.info(f"Updated restriction for user {user_id} on {unique_id}: {restrict}", extra={"user_id": user_id, "action": "update_restriction"})
     except Exception as e:
-        logger.error(f"Update restriction error: {e}")
+        logger.error(f"Update restriction failed: {e}", extra={"user_id": user_id, "action": "update_restriction"})
 
 def check_approval(user_id, unique_id):
     try:
@@ -127,6 +139,7 @@ def check_approval(user_id, unique_id):
                     if user["user_id"] == user_id:
                         user_restriction = user.get("restrict", False)
                         break
+                logger.info(f"Global approval check for user {user_id} on {unique_id}: approved", extra={"user_id": user_id, "action": "check_approval"})
                 return True, user_restriction
             for user in result.get("users", []):
                 if user["user_id"] == user_id:
@@ -137,10 +150,12 @@ def check_approval(user_id, unique_id):
                     )
                     if not approvals_collection.find_one({"_id": unique_id})["users"] and not result.get("global_approval", False):
                         approvals_collection.delete_one({"_id": unique_id})
+                    logger.info(f"User-specific approval check for user {user_id} on {unique_id}: approved", extra={"user_id": user_id, "action": "check_approval"})
                     return True, restrict
+        logger.info(f"No approval for user {user_id} on {unique_id}", extra={"user_id": user_id, "action": "check_approval"})
         return False, False
     except Exception as e:
-        logger.error(f"Check approval error: {e}")
+        logger.error(f"Check approval failed: {e}", extra={"user_id": user_id, "action": "check_approval"})
         return False, False
 
 def is_sudo_user(user_id):
@@ -164,14 +179,14 @@ def get_user_id(update: Update):
         return update.message.from_user.id
     elif update.edited_message and update.edited_message.from_user:
         return update.edited_message.from_user.id
-    logger.warning("No user ID")
+    logger.warning("No user ID found", extra={"user_id": "N/A", "action": "get_user_id"})
     return None
 
 def get_all_links():
     try:
         return list(messages_collection.find())
     except Exception as e:
-        logger.error(f"Fetch links error: {e}")
+        logger.error(f"Fetch links failed: {e}", extra={"user_id": "N/A", "action": "get_all_links"})
         return []
 
 def format_media_count(count):
@@ -188,6 +203,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         return
     unique_id = args[0]
+    logger.info(f"Link access attempt for {unique_id}", extra={"user_id": user_id, "action": "start"})
     if is_sudo_user(user_id):
         approved, restrict = True, False
     else:
@@ -195,15 +211,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not approved:
             keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
             await message.reply_text("You need approval.", reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.info("Access denied: not approved", extra={"user_id": user_id, "action": "start"})
             return
     data = load_message(unique_id)
     if not data:
         keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
         await message.reply_text("Link expired!", reply_markup=InlineKeyboardMarkup(keyboard))
+        logger.info("Access denied: link expired", extra={"user_id": user_id, "action": "start"})
         return
     async with processing_lock:
         user_progress[user_id] = {"sent": 0, "last_update": 0}
-    async with worker_semaphore:  # Limit concurrent users
+    # Send pending message if worker limit is reached
+    pending_msg = None
+    if worker_semaphore.locked():
+        pending_msg = await message.reply_text("Please wait, processing your request...")
+        pending_messages[user_id] = pending_msg.message_id
+        logger.info("User queued due to worker limit", extra={"user_id": user_id, "action": "start"})
+    async with worker_semaphore:
+        logger.info("Worker acquired", extra={"user_id": user_id, "action": "start"})
+        # Delete pending message if it exists
+        if user_id in pending_messages:
+            try:
+                await context.bot.delete_message(chat_id=message.chat_id, message_id=pending_messages[user_id])
+                del pending_messages[user_id]
+            except TelegramError as e:
+                logger.error(f"Failed to delete pending message: {e}", extra={"user_id": user_id, "action": "start"})
         if data.get("type") == "batch":
             content = data.get("content", [])
             total = len(content)
@@ -228,16 +260,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         sent += 1
                         user_progress[user_id]["sent"] = sent
                         retry_count = 0
+                        logger.info(f"Sent {content_type} {sent}/{total}", extra={"user_id": user_id, "action": "start"})
                     except TelegramError as e:
                         if "429" in str(e):
                             retry_count += 1
                             if retry_count > max_retries:
                                 await message.reply_text("Rate limit exceeded. Please try again later.")
+                                logger.error("Rate limit exceeded", extra={"user_id": user_id, "action": "start"})
                                 return
                             backoff = VIDEO_SEND_DELAY * (2 ** retry_count)
                             await asyncio.sleep(backoff)
                             continue
-                        logger.error(f"Send media error: {e}")
+                        logger.error(f"Send media failed: {e}", extra={"user_id": user_id, "action": "start"})
                         continue
                     await asyncio.sleep(VIDEO_SEND_DELAY)
         else:
@@ -255,11 +289,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
                 elif content_type == "document":
                     await message.reply_document(document=content, caption=caption, protect_content=restrict)
+                logger.info(f"Sent single {content_type}", extra={"user_id": user_id, "action": "start"})
             except TelegramError as e:
-                logger.error(f"Send content error: {e}")
+                logger.error(f"Send content failed: {e}", extra={"user_id": user_id, "action": "start"})
         async with processing_lock:
             if user_id in user_progress:
                 del user_progress[user_id]
+        logger.info("Worker released", extra={"user_id": user_id, "action": "start"})
 
 async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -275,6 +311,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_message(unique_id, data)
     link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
     await message.reply_text(f"Link: {link}")
+    logger.info(f"Generated text link {unique_id}", extra={"user_id": user_id, "action": "generate_text"})
 
 async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -287,6 +324,7 @@ async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batch_name = context.args[0]
     batch_data[user_id] = {"name": batch_name, "items": []}
     await message.reply_text(f"Batch '{batch_name}' started. Upload media and /make.")
+    logger.info(f"Started batch {batch_name}", extra={"user_id": user_id, "action": "batch"})
 
 async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -300,6 +338,7 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Batch link: {link}")
         del batch_data[user_id]
+        logger.info(f"Created batch link {unique_id}", extra={"user_id": user_id, "action": "make"})
     elif user_id in edit_data and edit_data[user_id]["items"]:
         unique_id = edit_data[user_id]["unique_id"]
         existing_data = load_message(unique_id)
@@ -310,8 +349,10 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Link updated: {len(updated_items)} items\n{link}")
         del edit_data[user_id]
+        logger.info(f"Updated link {unique_id} with {len(updated_items)} items", extra={"user_id": user_id, "action": "make"})
     else:
         await message.reply_text("No batch/edit started. Use /batch or /edit.")
+        logger.info("No batch/edit to make", extra={"user_id": user_id, "action": "make"})
 
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -321,6 +362,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     links = get_all_links()
     if not links:
         await message.reply_text("No links! Use /generate or /batch.")
+        logger.info("No links to edit", extra={"user_id": user_id, "action": "edit"})
         return
     keyboard = []
     for link in links:
@@ -329,6 +371,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         button_text = format_media_count(count)
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_{unique_id}")])
     await message.reply_text("Select link to edit:", reply_markup=InlineKeyboardMarkup(keyboard))
+    logger.info("Displayed links for editing", extra={"user_id": user_id, "action": "edit"})
 
 async def setworkers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -337,11 +380,13 @@ async def setworkers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.edited_message
     if not context.args:
         await message.reply_text("Provide number of workers: /setworkers <number>")
+        logger.info("No worker number provided", extra={"user_id": user_id, "action": "setworkers"})
         return
     try:
         workers = int(context.args[0])
         if workers < 1:
             await message.reply_text("Number of workers must be at least 1!")
+            logger.info("Invalid worker number: less than 1", extra={"user_id": user_id, "action": "setworkers"})
             return
         settings_collection.update_one(
             {"_id": "worker_limit"},
@@ -351,8 +396,10 @@ async def setworkers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         global worker_semaphore
         worker_semaphore = asyncio.Semaphore(workers)
         await message.reply_text(f"Set worker limit to {workers} concurrent users.")
+        logger.info(f"Set worker limit to {workers}", extra={"user_id": user_id, "action": "setworkers"})
     except ValueError:
         await message.reply_text("Invalid number! Use /setworkers <number>")
+        logger.info("Invalid worker number: not an integer", extra={"user_id": user_id, "action": "setworkers"})
 
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -361,6 +408,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.edited_message
     if not context.args:
         await message.reply_text("Provide UserID or link!")
+        logger.info("No UserID or link provided", extra={"user_id": user_id, "action": "approve"})
         return
     arg = context.args[0]
     is_link = arg.startswith(f"https://t.me/{BOT_USERNAME}?start=")
@@ -369,6 +417,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
             unique_id = arg.split("start=")[1]
             if not load_message(unique_id):
                 await message.reply_text("Invalid or expired link!")
+                logger.info("Invalid or expired link", extra={"user_id": user_id, "action": "approve"})
                 return
             save_global_approval(unique_id)
             keyboard = [
@@ -377,18 +426,22 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]
             ]
             await message.reply_text(f"Link approved for all users. Allow forwarding?", reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.info(f"Approved link {unique_id} for all users", extra={"user_id": user_id, "action": "approve"})
         except (IndexError, ValueError):
             await message.reply_text("Invalid link format!")
+            logger.info("Invalid link format", extra={"user_id": user_id, "action": "approve"})
             return
     else:
         try:
             target_user_id = int(arg)
         except ValueError:
             await message.reply_text("Invalid UserID or link!")
+            logger.info("Invalid UserID or link", extra={"user_id": user_id, "action": "approve"})
             return
         links = get_all_links()
         if not links:
             await message.reply_text("No links available!")
+            logger.info("No links available", extra={"user_id": user_id, "action": "approve"})
             return
         keyboard = []
         for link in links:
@@ -397,33 +450,38 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
             button_text = format_media_count(count)
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"approve_{unique_id}_{target_user_id}")])
         await message.reply_text(f"Select link for user {target_user_id}:", reply_markup=InlineKeyboardMarkup(keyboard))
+        logger.info(f"Displayed links for user {target_user_id}", extra={"user_id": user_id, "action": "approve"})
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user_id = query.from_user.id
     await query.answer()
     data = query.data.split("_")
     action = data[0]
     if action == "edit":
         unique_id = data[1]
-        user_id = query.from_user.id
         if not is_sudo_user(user_id):
             await query.message.edit_text("Only sudo users can edit!")
+            logger.info("Edit denied: not sudo user", extra={"user_id": user_id, "action": "button_callback"})
             return
         existing_data = load_message(unique_id)
         if not existing_data:
             await query.message.edit_text("Link expired!")
+            logger.info("Edit denied: link expired", extra={"user_id": user_id, "action": "button_callback"})
             return
         edit_data[user_id] = {"unique_id": unique_id, "items": []}
         await query.message.edit_text(f"Editing link {unique_id}. Upload media and /make.")
+        logger.info(f"Started editing link {unique_id}", extra={"user_id": user_id, "action": "button_callback"})
     elif action == "approve":
         unique_id = data[1]
         target_user_id = int(data[2])
-        user_id = query.from_user.id
         if not is_sudo_user(user_id):
             await query.message.edit_text("Only sudo users can approve!")
+            logger.info("Approve denied: not sudo user", extra={"user_id": user_id, "action": "button_callback"})
             return
         if not load_message(unique_id):
             await query.message.edit_text("Link expired!")
+            logger.info("Approve denied: link expired", extra={"user_id": user_id, "action": "button_callback"})
             return
         save_approval(target_user_id, unique_id)
         keyboard = [
@@ -432,13 +490,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]
         ]
         await query.message.edit_text(f"User {target_user_id} approved. Allow forwarding?", reply_markup=InlineKeyboardMarkup(keyboard))
+        logger.info(f"Approved user {target_user_id} for {unique_id}", extra={"user_id": user_id, "action": "button_callback"})
     elif action in ("allow", "restrict"):
         unique_id = data[1]
         target_user_id = int(data[2])
         restrict = action == "restrict"
-        user_id = query.from_user.id
         if not is_sudo_user(user_id):
             await query.message.edit_text("Only sudo users can modify restrictions!")
+            logger.info("Restriction change denied: not sudo user", extra={"user_id": user_id, "action": "button_callback"})
             return
         if target_user_id == 0:
             approvals_collection.update_one(
@@ -448,17 +507,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "restricted" if restrict else "allowed"
             keyboard = [[InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]]
             await query.message.edit_text(f"Forwarding {status} for all users.", reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.info(f"Set global forwarding {status} for {unique_id}", extra={"user_id": user_id, "action": "button_callback"})
         else:
             update_restriction(unique_id, target_user_id, restrict)
             status = "restricted" if restrict else "allowed"
             keyboard = [[InlineKeyboardButton("Share Link", callback_data=f"share_{unique_id}")]]
             await query.message.edit_text(f"Forwarding {status} for user {target_user_id}.", reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.info(f"Set forwarding {status} for user {target_user_id} on {unique_id}", extra={"user_id": user_id, "action": "button_callback"})
     elif action == "share":
         unique_id = data[1]
         share_url = f"https://telegram.me/share/url?url=https://t.me/{BOT_USERNAME}?start={unique_id}"
         await query.message.edit_text(f"Share this link: https://t.me/{BOT_USERNAME}?start={unique_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Share Link", url=share_url)]]))
+        logger.info(f"Shared link {unique_id}", extra={"user_id": user_id, "action": "button_callback"})
     elif action in ("plan_type", "buy"):
         await query.message.edit_text(f"Clicked {action}. Contact admin.")
+        logger.info(f"Clicked {action}", extra={"user_id": user_id, "action": "button_callback"})
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
@@ -490,14 +553,17 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(unique_id, {"_id": unique_id, "type": data["type"], "content": data["content"], "caption": caption})
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Link: {link}")
+    logger.info(f"Handled media upload: {data['type']}", extra={"user_id": user_id, "action": "handle_media"})
 
 async def handle_non_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
     if not user_id or not is_sudo_user(user_id):
         return
+    logger.info("Non-sudo message ignored", extra={"user_id": user_id, "action": "handle_non_sudo"})
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Error: {context.error}")
+    user_id = get_user_id(update) if update else "N/A"
+    logger.error(f"Bot error: {context.error}", extra={"user_id": user_id, "action": "error_handler"})
     error_msg = "Something went wrong."
     if update and (update.message or update.edited_message):
         await (update.message.reply_text(error_msg) if update.message else update.edited_message.reply_text(error_msg))
@@ -515,7 +581,7 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL, handle_media))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_non_sudo))
     application.add_error_handler(error_handler)
-    logger.info("Bot running...")
+    logger.info("Bot started", extra={"user_id": "N/A", "action": "main"})
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
