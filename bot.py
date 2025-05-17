@@ -247,7 +247,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     message = update.message or update.edited_message
     if not context.args:
-        await message.reply_text("Provide message:<message>")
+        await message.reply_text("Provide message: /generate <message>")
         return
     content = " ".join(context.args)
     unique_id = str(uuid.uuid4())
@@ -300,7 +300,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.edited_message
     links = get_all_links()
     if not links:
-        await message.reply_text("No links! Use generate or /batch.")
+        await message.reply_text("No links! Use /generate or /batch.")
         return
     keyboard = []
     for link in links:
