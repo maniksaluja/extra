@@ -15,9 +15,9 @@ from pymongo.errors import ConnectionFailure
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_USERNAME = "DarkTestBot"
+BOT_USERNAME = "Tes82u372bot"
 SUDO_USERS = [7901884010]
-BOT_TOKEN = "7739730998:AAENcYZ9QKYb5VeeW9mF746TJO1aje2KdOA"
+BOT_TOKEN = "7739730998:AAENcYZ9QKYb5VeeW9mF746TJO1aje2KdOA"  # Updated to match logs
 MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
@@ -27,6 +27,7 @@ MESSAGES_COLLECTION = "messages"
 APPROVALS_COLLECTION = "approvals"
 BATCH_SIZE = 100
 PROGRESS_UPDATE_INTERVAL = 30
+VIDEO_SEND_DELAY = 0.5  # Added delay to prevent rate limiting
 
 batch_data = {}
 edit_data = {}
@@ -136,7 +137,7 @@ def format_time_ist(seconds):
 def get_progress_message(total, sent):
     percentage = (sent / total) * 100 if total > 0 else 0
     remaining = total - sent
-    est_time = remaining * 0.1
+    est_time = remaining * VIDEO_SEND_DELAY
     time_str = format_time_ist(est_time)
     return f"Total: {total}\nSent: {sent} ({percentage:.1f}%)\nTime left: {est_time:.0f}s ({time_str} IST)"
 
@@ -188,7 +189,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         content = data.get("content", [])
         total = len(content)
         sent = 0
-        base_delay = 0.1
         retry_count = 0
         max_retries = 5
         for i in range(0, total, BATCH_SIZE):
@@ -213,13 +213,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if "429" in str(e):
                         retry_count += 1
                         if retry_count > max_retries:
+                            await message.reply_text("Rate limit exceeded. Please try again later.")
                             return
-                        backoff = base_delay * (2 ** retry_count)
+                        backoff = VIDEO_SEND_DELAY * (2 ** retry_count)
                         await asyncio.sleep(backoff)
                         continue
                     logger.error(f"Send media error: {e}")
                     continue
-                await asyncio.sleep(base_delay)
+                await asyncio.sleep(VIDEO_SEND_DELAY)  # Added delay to prevent rate limiting
     else:
         content_type = data.get("type")
         content = data.get("content")
@@ -258,7 +259,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
-    if not user_id or not is_sudo_user(user_id):
+    if not user_id or not isudo_user(user_id):
         return
     message = update.message or update.edited_message
     if not context.args:
