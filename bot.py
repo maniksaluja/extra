@@ -567,7 +567,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     try:
-        application = Application.builder().token(BOT_TOKEN).get_updates_timeout(30).build()
+        application = Application.builder().token(BOT_TOKEN).read_timeout(30).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("generate", generate_text))
         application.add_handler(CommandHandler("batch", batch))
@@ -583,8 +583,8 @@ def main():
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         logger.error(f"Polling failed: {e}", extra={"user_id": "N/A", "action": "main"})
-        time.sleep(5)  # Wait before restarting
-        main()  # Restart polling
+        time.sleep(5)
+        main()
 
 if __name__ == "__main__":
     main()
