@@ -21,7 +21,7 @@ logging.getLogger().handlers[0].setFormatter(
     logging.Formatter('%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s')
 )
 
-BOT_USERNAME = "DarkTestBot"
+BOT_USERNAME = "Tes82u372bot"
 SUDO_USERS = [7901884010]
 BOT_TOKEN = "7739730998:AAENcYZ9QKYb5VeeW9mF746TJO1aje2KdOA"
 MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
@@ -150,7 +150,7 @@ def check_approval(user_id, unique_id):
                     return True, restrict
         return False, False
     except Exception as e:
-        logger.error(f"Check approval failed:jut {e}", extra={"user_id": user_id, "action": "check_approval"})
+        logger.error(f"Check approval failed: {e}", extra={"user_id": user_id, "action": "check_approval"})
         return False, False
 
 def is_sudo_user(user_id):
@@ -165,7 +165,7 @@ def format_time_ist(seconds):
 def get_progress_message(total, sent):
     percentage = (sent / total) * 100 if total > 0 else 0
     remaining = total - sent
-    est_time = remaining * VIDEO SEND DELAY
+    est_time = remaining * VIDEO_SEND_DELAY
     time_str = format_time_ist(est_time)
     return f"Total: {total}\nSent: {sent} ({percentage:.1f}%)\nTime left: {est_time:.0f}s ({time_str} IST)"
 
