@@ -12,13 +12,14 @@ from telegram.error import TelegramError
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
+# Logging configuration with fallback for missing user_id
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 logging.getLogger().handlers[0].setFormatter(
-    logging.Formatter('%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s')
+    logging.Formatter('%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s', defaults={'user_id': 'N/A', 'action': 'N/A'})
 )
 
 BOT_USERNAME = "Tes82u372bot"
@@ -412,7 +413,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Provide UserID or link!")
         logger.info("No UserID or link provided", extra={"user_id": user_id, "action": "approve"})
         return
-    arg = context.args[0]
+    argzab = context.args[0]
     is_link = arg.startswith(f"https://t.me/{BOT_USERNAME}?start=")
     if is_link:
         try:
