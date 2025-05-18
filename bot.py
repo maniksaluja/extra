@@ -21,7 +21,7 @@ logging.getLogger().handlers[0].setFormatter(
     logging.Formatter('%(asctime)s - %(levelname)s - User: %(user_id)s - Action: %(action)s - %(message)s')
 )
 
-BOT_USERNAME = "Tes82u372bot"
+BOT_USERNAME = "DarkTestBot"
 SUDO_USERS = [7901884010]
 BOT_TOKEN = "7739730998:AAENcYZ9QKYb5VeeW9mF746TJO1aje2KdOA"
 MONGO_URI = "mongodb+srv://desi:godfather@cluster0.lw3qhp0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
@@ -67,7 +67,6 @@ def init_worker_semaphore():
         settings = settings_collection.find_one({"_id": "worker_limit"})
         worker_limit = settings.get("workers", DEFAULT_WORKERS) if settings else DEFAULT_WORKERS
         worker_semaphore = asyncio.Semaphore(worker_limit)
-        logger.info(f"Initialized worker semaphore with {worker_limit} workers", extra={"user_id": "N/A", "action": "init_workers"})
     except Exception as e:
         logger.error(f"Init worker semaphore failed: {e}", extra={"user_id": "N/A", "action": "init_workers"})
         worker_semaphore = asyncio.Semaphore(DEFAULT_WORKERS)
@@ -78,7 +77,6 @@ def save_message(unique_id, data):
     try:
         messages_collection.update_one({"_id": unique_id}, {"$set": data}, upsert=True)
         redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
-        logger.info(f"Saved message {unique_id}", extra={"user_id": "N/A", "action": "save_message"})
     except Exception as e:
         logger.error(f"Save message failed: {e}", extra={"user_id": "N/A", "action": "save_message"})
 
@@ -90,7 +88,6 @@ def load_message(unique_id):
         data = messages_collection.find_one({"_id": unique_id})
         if data:
             redis_client.setex(f"message:{unique_id}", 3600, json.dumps(data))
-            logger.info(f"Loaded message {unique_id} from MongoDB", extra={"user_id": "N/A", "action": "load_message"})
         return data
     except Exception as e:
         logger.error(f"Load message failed: {e}", extra={"user_id": "N/A", "action": "load_message"})
@@ -151,10 +148,9 @@ def check_approval(user_id, unique_id):
                         approvals_collection.delete_one({"_id": unique_id})
                     logger.info(f"User-specific approval check for user {user_id} on {unique_id}: approved", extra={"user_id": user_id, "action": "check_approval"})
                     return True, restrict
-        logger.info(f"No approval for user {user_id} on {unique_id}", extra={"user_id": user_id, "action": "check_approval"})
         return False, False
     except Exception as e:
-        logger.error(f"Check approval failed: {e}", extra={"user_id": user_id, "action": "check_approval"})
+        logger.error(f"Check approval failed:jut {e}", extra={"user_id": user_id, "action": "check_approval"})
         return False, False
 
 def is_sudo_user(user_id):
@@ -169,7 +165,7 @@ def format_time_ist(seconds):
 def get_progress_message(total, sent):
     percentage = (sent / total) * 100 if total > 0 else 0
     remaining = total - sent
-    est_time = remaining * VIDEO_SEND_DELAY
+    est_time = remaining * VIDEO SEND DELAY
     time_str = format_time_ist(est_time)
     return f"Total: {total}\nSent: {sent} ({percentage:.1f}%)\nTime left: {est_time:.0f}s ({time_str} IST)"
 
@@ -203,6 +199,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     unique_id = args[0]
     logger.info(f"Link access attempt for {unique_id}", extra={"user_id": user_id, "action": "start"})
+    async with processing_lock:
+        if user_id in user_progress:
+            await message.reply_text("You're already processing a link. Please wait until it's complete.")
+            logger.info("Request rejected: user already processing", extra={"user_id": user_id, "action": "start"})
+            return
     if is_sudo_user(user_id):
         approved, restrict = True, False
     else:
@@ -223,14 +224,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_msg = None
     if worker_semaphore.locked():
         pending_msg = await message.reply_text("Please wait, processing your request...")
-        pending_messages[user_id] = pending_msg.message_id
+        redis_client.setex(f"pending:{user_id}", 3600, json.dumps({"message_id": pending_msg.message_id, "chat_id": message.chat_id}))
         logger.info("User queued due to worker limit", extra={"user_id": user_id, "action": "start"})
     async with worker_semaphore:
         logger.info("Worker acquired", extra={"user_id": user_id, "action": "start"})
-        if user_id in pending_messages:
+        pending_data = redis_client.get(f"pending:{user_id}")
+        if pending_data:
             try:
-                await context.bot.delete_message(chat_id=message.chat_id, message_id=pending_messages[user_id])
-                del pending_messages[user_id]
+                pending = json.loads(pending_data)
+                await context.bot.delete_message(chat_id=pending["chat_id"], message_id=pending["message_id"])
+                redis_client.delete(f"pending:{user_id}")
             except TelegramError as e:
                 logger.error(f"Failed to delete pending message: {e}", extra={"user_id": user_id, "action": "start"})
         if data.get("type") == "batch":
@@ -301,6 +304,7 @@ async def generate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.edited_message
     if not context.args:
         await message.reply_text("Provide message: /generate <message>")
+        logger.info("No message provided", extra={"user_id": user_id, "action": "generate_text"})
         return
     content = " ".join(context.args)
     unique_id = str(uuid.uuid4())
@@ -317,6 +321,7 @@ async def batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.edited_message
     if not context.args:
         await message.reply_text("Provide batch name: /batch <name>")
+        logger.info("No batch name provided", extra={"user_id": user_id, "action": "batch"})
         return
     batch_name = context.args[0]
     batch_data[user_id] = {"name": batch_name, "items": []}
@@ -550,13 +555,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(unique_id, {"_id": unique_id, "type": data["type"], "content": data["content"], "caption": caption})
         link = f"https://t.me/{BOT_USERNAME}?start={unique_id}"
         await message.reply_text(f"Link: {link}")
-    logger.info(f"Handled media upload: {data['type']}", extra={"user_id": user_id, "action": "handle_media"})
+        logger.info(f"Generated media link {unique_id}", extra={"user_id": user_id, "action": "handle_media"})
 
 async def handle_non_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
-    if not user_id or not is_sudo_user(user_id):
+    if not user_id or is_sudo_user(user_id):
         return
-    logger.info("Non-sudo message ignored", extra={"user_id": user_id, "action": "handle_non_sudo"})
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update) if update else "N/A"
@@ -567,6 +571,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     try:
+        pending_keys = redis_client.keys("pending:*")
+        for key in pending_keys:
+            redis_client.delete(key)
+        logger.info("Cleared pending requests on startup", extra={"user_id": "N/A", "action": "main"})
         application = Application.builder().token(BOT_TOKEN).read_timeout(30).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("generate", generate_text))
