@@ -216,17 +216,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     unique_id = args[0]
     logger.info(f"Link access attempt for {unique_id}", extra={"user_id": user_id, "action": "start"})
-    
+
+    # Check if user is already processing within lock
     async with processing_lock:
-        # Check if user is already processing
         if user_id in user_progress:
-            await message.reply_text("You're already processing a link. Please wait until it's complete.")
+            await message.reply_text("Rejected: You're already processing a link. Please wait until it's complete.")
             logger.info(f"Request rejected: user {user_id} already processing", extra={"user_id": user_id, "action": "start"})
             return
         # Mark user as processing
         user_progress[user_id] = {"sent": 0, "last_update": time.time()}
-    
+
     try:
+        # Approval and link validation
         if is_sudo_user(user_id):
             approved, restrict = True, False
         else:
@@ -242,15 +243,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("Link expired!", reply_markup=InlineKeyboardMarkup(keyboard))
             logger.info("Access denied: link expired", extra={"user_id": user_id, "action": "start"})
             return
-        
+
+        # Worker semaphore for concurrent users
         pending_msg = None
         if worker_semaphore.locked():
             pending_msg = await message.reply_text("Please wait, processing your request...")
             redis_client.setex(f"pending:{user_id}", 3600, json.dumps({"message_id": pending_msg.message_id, "chat_id": message.chat_id}))
             logger.info("User queued due to worker limit", extra={"user_id": user_id, "action": "start"})
-        
+
         async with worker_semaphore:
             logger.info("Worker acquired", extra={"user_id": user_id, "action": "start"})
+            # Clean up pending message
             pending_data = redis_client.get(f"pending:{user_id}")
             if pending_data:
                 try:
@@ -259,7 +262,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     redis_client.delete(f"pending:{user_id}")
                 except TelegramError as e:
                     logger.error(f"Failed to delete pending message: {e}", extra={"user_id": user_id, "action": "start"})
-            
+
+            # Process batch content
             if data.get("type") == "batch":
                 content = data.get("content", [])
                 total = len(content)
@@ -301,6 +305,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             continue
                         await asyncio.sleep(VIDEO_SEND_DELAY)
             else:
+                # Process single content
                 content_type = data.get("type")
                 content = data.get("content")
                 caption = data.get("caption", "")
@@ -321,6 +326,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except TelegramError as e:
                     logger.error(f"Send content failed: {e}", extra={"user_id": user_id, "action": "start"})
     finally:
+        # Always clean up user_progress
         async with processing_lock:
             if user_id in user_progress:
                 del user_progress[user_id]
