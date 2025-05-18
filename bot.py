@@ -37,6 +37,7 @@ BATCH_SIZE = 100
 PROGRESS_UPDATE_INTERVAL = 30
 VIDEO_SEND_DELAY = 0.5
 DEFAULT_WORKERS = 100
+PROGRESS_TIMEOUT = 3600  # 1 hour timeout for stale user_progress entries
 
 batch_data = {}
 edit_data = {}
@@ -190,6 +191,21 @@ def format_media_count(count):
         return f"{count // 1000}k"
     return str(count)
 
+async def clean_stale_progress():
+    while True:
+        try:
+            async with processing_lock:
+                current_time = time.time()
+                stale_users = [user_id for user_id, progress in user_progress.items()
+                               if current_time - progress.get("last_update", 0) > PROGRESS_TIMEOUT]
+                for user_id in stale_users:
+                    del user_progress[user_id]
+                    logger.info(f"Cleaned stale progress for user {user_id}", extra={"user_id": user_id, "action": "clean_stale_progress"})
+            await asyncio.sleep(600)  # Check every 10 minutes
+        except Exception as e:
+            logger.error(f"Clean stale progress failed: {e}", extra={"user_id": "N/A", "action": "clean_stale_progress"})
+            await asyncio.sleep(600)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id(update)
     if not user_id:
@@ -200,99 +216,111 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     unique_id = args[0]
     logger.info(f"Link access attempt for {unique_id}", extra={"user_id": user_id, "action": "start"})
+    
     async with processing_lock:
+        # Check if user is already processing
         if user_id in user_progress:
             await message.reply_text("You're already processing a link. Please wait until it's complete.")
-            logger.info("Request rejected: user already processing", extra={"user_id": user_id, "action": "start"})
+            logger.info(f"Request rejected: user {user_id} already processing", extra={"user_id": user_id, "action": "start"})
             return
-    if is_sudo_user(user_id):
-        approved, restrict = True, False
-    else:
-        approved, restrict = check_approval(user_id, unique_id)
-        if not approved:
-            keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
-            await message.reply_text("You need approval.", reply_markup=InlineKeyboardMarkup(keyboard))
-            logger.info("Access denied: not approved", extra={"user_id": user_id, "action": "start"})
-            return
-    data = load_message(unique_id)
-    if not data:
-        keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
-        await message.reply_text("Link expired!", reply_markup=InlineKeyboardMarkup(keyboard))
-        logger.info("Access denied: link expired", extra={"user_id": user_id, "action": "start"})
-        return
-    async with processing_lock:
-        user_progress[user_id] = {"sent": 0, "last_update": 0}
-    pending_msg = None
-    if worker_semaphore.locked():
-        pending_msg = await message.reply_text("Please wait, processing your request...")
-        redis_client.setex(f"pending:{user_id}", 3600, json.dumps({"message_id": pending_msg.message_id, "chat_id": message.chat_id}))
-        logger.info("User queued due to worker limit", extra={"user_id": user_id, "action": "start"})
-    async with worker_semaphore:
-        logger.info("Worker acquired", extra={"user_id": user_id, "action": "start"})
-        pending_data = redis_client.get(f"pending:{user_id}")
-        if pending_data:
-            try:
-                pending = json.loads(pending_data)
-                await context.bot.delete_message(chat_id=pending["chat_id"], message_id=pending["message_id"])
-                redis_client.delete(f"pending:{user_id}")
-            except TelegramError as e:
-                logger.error(f"Failed to delete pending message: {e}", extra={"user_id": user_id, "action": "start"})
-        if data.get("type") == "batch":
-            content = data.get("content", [])
-            total = len(content)
-            sent = 0
-            retry_count = 0
-            max_retries = 5
-            for i in range(0, total, BATCH_SIZE):
-                batch = content[i:i + BATCH_SIZE]
-                for item in batch:
-                    content_type = item.get("type")
-                    content = item.get("content")
-                    caption = item.get("caption", "")
-                    try:
-                        if content_type == "photo":
-                            await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
-                        elif content_type == "video":
-                            await message.reply_video(video=content, caption=caption, protect_content=restrict)
-                        elif content_type == "audio":
-                            await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
-                        elif content_type == "document":
-                            await message.reply_document(document=content, caption=caption, protect_content=restrict)
-                        sent += 1
-                        user_progress[user_id]["sent"] = sent
-                        retry_count = 0
-                        logger.info(f"Sent {content_type} {sent}/{total}", extra={"user_id": user_id, "action": "start"})
-                    except TelegramError as e:
-                        if "429" in str(e):
-                            retry_count += 1
-                            if retry_count > max_retries:
-                                await message.reply_text("Rate limit exceeded. Please try again later.")
-                                logger.error("Rate limit exceeded", extra={"user_id": user_id, "action": "start"})
-                                return
-                            backoff = VIDEO_SEND_DELAY * (2 ** retry_count)
-                            await asyncio.sleep(backoff)
-                            continue
-                        logger.error(f"Send media failed: {e}", extra={"user_id": user_id, "action": "start"})
-                        continue
-                    await asyncio.sleep(VIDEO_SEND_DELAY)
+        # Mark user as processing
+        user_progress[user_id] = {"sent": 0, "last_update": time.time()}
+    
+    try:
+        if is_sudo_user(user_id):
+            approved, restrict = True, False
         else:
-            content_type = data.get("type")
-            content = data.get("content")
-            caption = data.get("caption", "")
-            try:
-                if content_type == "text":
-                    await message.reply_text(content)
-                elif content_type == "photo":
-                    await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
-                elif content_type == "video":
-                    await message.reply_video(video=content, caption=caption, protect_content=restrict)
-                elif content_type == "audio":
-                    await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
-                elif content_type == "document":
-                    await message.reply_document(document=content, caption=caption, protect_content=restrict)
-                logger.info(f"Sent single {content_type}", extra={"user_id": user_id, "action": "start"})
-            except TelegramError as e:
-                logger.error(f"Send content failed: {e}", extra={"user_id": user_id, "action": "start"})
+            approved, restrict = check_approval(user_id, unique_id)
+            if not approved:
+                keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
+                await message.reply_text("You need approval.", reply_markup=InlineKeyboardMarkup(keyboard))
+                logger.info("Access denied: not approved", extra={"user_id": user_id, "action": "start"})
+                return
+        data = load_message(unique_id)
+        if not data:
+            keyboard = [[InlineKeyboardButton("Plan Type", callback_data="plan_type"), InlineKeyboardButton("Buy", callback_data="buy")]]
+            await message.reply_text("Link expired!", reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.info("Access denied: link expired", extra={"user_id": user_id, "action": "start"})
+            return
+        
+        pending_msg = None
+        if worker_semaphore.locked():
+            pending_msg = await message.reply_text("Please wait, processing your request...")
+            redis_client.setex(f"pending:{user_id}", 3600, json.dumps({"message_id": pending_msg.message_id, "chat_id": message.chat_id}))
+            logger.info("User queued due to worker limit", extra={"user_id": user_id, "action": "start"})
+        
+        async with worker_semaphore:
+            logger.info("Worker acquired", extra={"user_id": user_id, "action": "start"})
+            pending_data = redis_client.get(f"pending:{user_id}")
+            if pending_data:
+                try:
+                    pending = json.loads(pending_data)
+                    await context.bot.delete_message(chat_id=pending["chat_id"], message_id=pending["message_id"])
+                    redis_client.delete(f"pending:{user_id}")
+                except TelegramError as e:
+                    logger.error(f"Failed to delete pending message: {e}", extra={"user_id": user_id, "action": "start"})
+            
+            if data.get("type") == "batch":
+                content = data.get("content", [])
+                total = len(content)
+                sent = 0
+                retry_count = 0
+                max_retries = 5
+                for i in range(0, total, BATCH_SIZE):
+                    batch = content[i:i + BATCH_SIZE]
+                    for item in batch:
+                        content_type = item.get("type")
+                        content = item.get("content")
+                        caption = item.get("caption", "")
+                        try:
+                            if content_type == "photo":
+                                await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
+                            elif content_type == "video":
+                                await message.reply_video(video=content, caption=caption, protect_content=restrict)
+                            elif content_type == "audio":
+                                await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
+                            elif content_type == "document":
+                                await message.reply_document(document=content, caption=caption, protect_content=restrict)
+                            sent += 1
+                            async with processing_lock:
+                                user_progress[user_id]["sent"] = sent
+                                user_progress[user_id]["last_update"] = time.time()
+                            retry_count = 0
+                            logger.info(f"Sent {content_type} {sent}/{total}", extra={"user_id": user_id, "action": "start"})
+                        except TelegramError as e:
+                            if "429" in str(e):
+                                retry_count += 1
+                                if retry_count > max_retries:
+                                    await message.reply_text("Rate limit exceeded. Please try again later.")
+                                    logger.error("Rate limit exceeded", extra={"user_id": user_id, "action": "start"})
+                                    return
+                                backoff = VIDEO_SEND_DELAY * (2 ** retry_count)
+                                await asyncio.sleep(backoff)
+                                continue
+                            logger.error(f"Send media failed: {e}", extra={"user_id": user_id, "action": "start"})
+                            continue
+                        await asyncio.sleep(VIDEO_SEND_DELAY)
+            else:
+                content_type = data.get("type")
+                content = data.get("content")
+                caption = data.get("caption", "")
+                try:
+                    if content_type == "text":
+                        await message.reply_text(content)
+                    elif content_type == "photo":
+                        await message.reply_photo(photo=content, caption=caption, protect_content=restrict)
+                    elif content_type == "video":
+                        await message.reply_video(video=content, caption=caption, protect_content=restrict)
+                    elif content_type == "audio":
+                        await message.reply_audio(audio=content, caption=caption, protect_content=restrict)
+                    elif content_type == "document":
+                        await message.reply_document(document=content, caption=caption, protect_content=restrict)
+                    async with processing_lock:
+                        user_progress[user_id]["last_update"] = time.time()
+                    logger.info(f"Sent single {content_type}", extra={"user_id": user_id, "action": "start"})
+                except TelegramError as e:
+                    logger.error(f"Send content failed: {e}", extra={"user_id": user_id, "action": "start"})
+    finally:
         async with processing_lock:
             if user_id in user_progress:
                 del user_progress[user_id]
@@ -413,7 +441,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Provide UserID or link!")
         logger.info("No UserID or link provided", extra={"user_id": user_id, "action": "approve"})
         return
-    argzab = context.args[0]
+    arg = context.args[0]
     is_link = arg.startswith(f"https://t.me/{BOT_USERNAME}?start=")
     if is_link:
         try:
@@ -588,6 +616,8 @@ def main():
         application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL, handle_media))
         application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_non_sudo))
         application.add_error_handler(error_handler)
+        # Start cleanup task
+        asyncio.get_event_loop().create_task(clean_stale_progress())
         logger.info("Bot started", extra={"user_id": "N/A", "action": "main"})
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
